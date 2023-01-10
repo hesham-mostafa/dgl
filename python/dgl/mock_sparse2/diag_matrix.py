@@ -36,8 +36,30 @@ class DiagMatrix:
             )
         else:
             shape = (len_val, len_val)
-        self.val = val
-        self.shape = shape
+        self._val = val
+        self._shape = shape
+
+    @property
+    def val(self) -> torch.Tensor:
+        """Get the values of the nonzero elements.
+
+        Returns
+        -------
+        torch.Tensor
+            Values of the nonzero elements
+        """
+        return self._val
+
+    @property
+    def shape(self) -> Tuple[int]:
+        """Shape of the sparse matrix.
+
+        Returns
+        -------
+        Tuple[int]
+            The shape of the matrix
+        """
+        return self._shape
 
     def __repr__(self):
         return f"DiagMatrix(val={self.val}, \nshape={self.shape})"
@@ -98,6 +120,22 @@ class DiagMatrix:
         """
         row = col = torch.arange(len(self.val)).to(self.device)
         return create_from_coo(row=row, col=col, val=self.val, shape=self.shape)
+
+    def dense(self) -> torch.Tensor:
+        """Return a dense representation of the matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            Dense representation of the diagonal matrix.
+        """
+        val = self.val
+        device = self.device
+        shape = self.shape + val.shape[1:]
+        mat = torch.zeros(shape, device=device, dtype=self.dtype)
+        row = col = torch.arange(len(val)).to(device)
+        mat[row, col] = val
+        return mat
 
     def t(self):
         """Alias of :meth:`transpose()`"""
