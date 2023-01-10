@@ -1,6 +1,7 @@
 """Neighbor sampling APIs"""
 
 import torch
+import os
 from .._ffi.function import _init_api
 from .. import backend as F
 from ..base import DGLError, EID, NID
@@ -400,9 +401,10 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
     if fused:
-        if '__mapping' not in g.ndata:
-            g.ndata['__mapping'] = torch.LongTensor(g.number_of_nodes()).fill_(-1)
-        mapping = g.ndata['__mapping']
+        mapping_name = '__mapping' + str(os.getpid())
+        if mapping_name not in g.ndata:
+            g.ndata[mapping_name] = torch.LongTensor(g.number_of_nodes()).fill_(-1)
+        mapping = g.ndata[mapping_name]
         subgidx = _CAPI_DGLSampleNeighborsFused(
             g._graph, nodes_all_types, F.to_dgl_nd(mapping), fanout_array, edge_dir, prob_arrays,
             excluded_edges_all_t, replace)
