@@ -4,8 +4,7 @@ import torch as th
 import torch.nn.functional as F
 from torch import nn
 
-from .... import broadcast_nodes
-from .... import function as fn
+from .... import broadcast_nodes, function as fn
 from ....base import dgl_warning
 
 
@@ -101,11 +100,9 @@ class ChebConv(nn.Module):
             return graph.ndata.pop("h") * D_invsqrt
 
         with graph.local_scope():
-            D_invsqrt = (
-                th.pow(graph.in_degrees().float().clamp(min=1), -0.5)
-                .unsqueeze(-1)
-                .to(feat.device)
-            )
+            D_invsqrt = th.pow(
+                graph.in_degrees().to(feat).clamp(min=1), -0.5
+            ).unsqueeze(-1)
 
             if lambda_max is None:
                 dgl_warning(

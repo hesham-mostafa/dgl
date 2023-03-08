@@ -8,13 +8,12 @@ import zipfile
 os.environ["DGLBACKEND"] = "mxnet"
 os.environ["MXNET_GPU_MEM_POOL_TYPE"] = "Round"
 
+import dgl
+import dgl.data as data
 import mxnet as mx
 import numpy as np
 from mxnet import gluon
 from tree_lstm import TreeLSTM
-
-import dgl
-import dgl.data as data
 
 SSTBatch = collections.namedtuple(
     "SSTBatch", ["graph", "mask", "wordid", "label"]
@@ -171,7 +170,7 @@ def main(args):
                 root_ids = [
                     i
                     for i in range(batch.graph.number_of_nodes())
-                    if batch.graph.out_degree(i) == 0
+                    if batch.graph.out_degrees(i) == 0
                 ]
                 root_acc = np.sum(
                     batch.label.asnumpy()[root_ids] == pred.asnumpy()[root_ids]
@@ -208,7 +207,7 @@ def main(args):
             root_ids = [
                 i
                 for i in range(batch.graph.number_of_nodes())
-                if batch.graph.out_degree(i) == 0
+                if batch.graph.out_degrees(i) == 0
             ]
             root_acc = np.sum(
                 batch.label.asnumpy()[root_ids] == pred.asnumpy()[root_ids]
@@ -261,7 +260,7 @@ def main(args):
         root_ids = [
             i
             for i in range(batch.graph.number_of_nodes())
-            if batch.graph.out_degree(i) == 0
+            if batch.graph.out_degrees(i) == 0
         ]
         root_acc = np.sum(
             batch.label.asnumpy()[root_ids] == pred.asnumpy()[root_ids]

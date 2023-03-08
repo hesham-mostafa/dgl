@@ -2,8 +2,10 @@
 import sys
 
 from .. import backend as F
-from ..backend import gspmm as gspmm_internal
-from ..backend import gspmm_hetero as gspmm_internal_hetero
+from ..backend import (
+    gspmm as gspmm_internal,
+    gspmm_hetero as gspmm_internal_hetero,
+)
 
 __all__ = ["gspmm"]
 
@@ -34,7 +36,7 @@ def reshape_lhs_rhs(lhs_data, rhs_data):
     return lhs_data, rhs_data
 
 
-def gspmm(g, op, reduce_op, lhs_data, rhs_data, efeats_redirected=None):
+def gspmm(g, op, reduce_op, lhs_data, rhs_data):
     r"""Generalized Sparse Matrix Multiplication interface.
     It fuses two steps into one kernel.
 
@@ -70,11 +72,6 @@ def gspmm(g, op, reduce_op, lhs_data, rhs_data, efeats_redirected=None):
     tensor
         The result tensor.
     """
-    if rhs_data is not None and efeats_redirected is not None:
-        efeats_redirected_indices = rhs_data
-        rhs_data = efeats_redirected
-    else:
-        efeats_redirected_indices = None
 
     if g._graph.number_of_etypes() == 1:
         if op not in ["copy_lhs", "copy_rhs"]:
@@ -85,8 +82,8 @@ def gspmm(g, op, reduce_op, lhs_data, rhs_data, efeats_redirected=None):
             op,
             "sum" if reduce_op == "mean" else reduce_op,
             lhs_data,
-            rhs_data,
-            efeats_redirected_indices=efeats_redirected_indices
+            rhs_data
+
         )
     else:
         # lhs_data or rhs_data is None only in unary functions like ``copy-u`` or ``copy_e``
@@ -176,8 +173,8 @@ def _gen_spmm_func(binary_op, reduce_op):
     )
     docstring = _attach_zerodeg_note(docstring, reduce_op)
 
-    def func(g, x, y, efeats_redirected=None):
-        return gspmm(g, binary_op, reduce_op, x, y, efeats_redirected)
+    def func(g, x, y):
+        return gspmm(g, binary_op, reduce_op, x, y)
 
     func.__name__ = name
     func.__doc__ = docstring
@@ -218,12 +215,12 @@ def _gen_copy_reduce_func(binary_op, reduce_op):
         reduce_op,
     )
 
-    def func(g, x, efeats_redirected=None):
+    def func(g, x):
         if binary_op == "copy_u":
-            return gspmm(g, "copy_lhs", reduce_op, x, None, efeats_redirected=efeats_redirected)
+            return gspmm(g, "copy_lhs", reduce_op, x, None)
 
         else:
-            return gspmm(g, "copy_rhs", reduce_op, None, x, efeats_redirected=efeats_redirected)
+            return gspmm(g, "copy_rhs", reduce_op, None, x)
 
     func.__name__ = name
     func.__doc__ = docstring(binary_op)

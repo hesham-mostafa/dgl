@@ -5,16 +5,16 @@ Data utils for processing bAbI datasets
 import os
 import string
 
-import torch
-from torch.utils.data import DataLoader
-
 import dgl
+
+import torch
 from dgl.data.utils import (
     _get_dgl_url,
     download,
     extract_archive,
     get_download_dir,
 )
+from torch.utils.data import DataLoader
 
 
 def get_babi_dataloaders(batch_size, train_size=50, task_id=4, q_type=0):
@@ -117,10 +117,10 @@ def _ns_dataloader(
 
             edge_types = []
             for s, e, t in edges:
-                g.add_edge(nid2idx[s], nid2idx[t])
+                g.add_edges(nid2idx[s], nid2idx[t])
                 edge_types.append(e)
                 if e in reverse_edge:
-                    g.add_edge(nid2idx[t], nid2idx[s])
+                    g.add_edges(nid2idx[t], nid2idx[s])
                     edge_types.append(reverse_edge[e])
             g.edata["type"] = torch.tensor(edge_types, dtype=torch.long)
             annotation = torch.zeros(len(node_ids), dtype=torch.long)
@@ -234,10 +234,10 @@ def _gc_dataloader(
 
             edge_types = []
             for s, e, t in edges:
-                g.add_edge(nid2idx[s], nid2idx[t])
+                g.add_edges(nid2idx[s], nid2idx[t])
                 edge_types.append(e)
                 if e in reverse_edge:
-                    g.add_edge(nid2idx[t], nid2idx[s])
+                    g.add_edges(nid2idx[t], nid2idx[s])
                     edge_types.append(reverse_edge[e])
             g.edata["type"] = torch.tensor(edge_types, dtype=torch.long)
             annotation = torch.zeros([len(node_ids), 2], dtype=torch.long)
@@ -361,10 +361,10 @@ def _path_finding_dataloader(
 
             edge_types = []
             for s, e, t in edges:
-                g.add_edge(nid2idx[s], nid2idx[t])
+                g.add_edges(nid2idx[s], nid2idx[t])
                 edge_types.append(e)
                 if e in reverse_edge:
-                    g.add_edge(nid2idx[t], nid2idx[s])
+                    g.add_edges(nid2idx[t], nid2idx[s])
                     edge_types.append(reverse_edge[e])
             g.edata["type"] = torch.tensor(edge_types, dtype=torch.long)
             annotation = torch.zeros([len(node_ids), 2], dtype=torch.long)

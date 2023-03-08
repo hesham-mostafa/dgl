@@ -56,18 +56,6 @@ void SDDMMCsr(
 }
 
 
-/** @brief Generalized SDDMM on Csr format. */
-template <int XPU, typename IdType, typename DType>
-void SDDMMCsrRedirected(
-    const std::string& op, const BcastOff& bcast, const CSRMatrix& csr,
-    NDArray lhs, NDArray rhs, NDArray out,NDArray efeats_redirected, int lhs_target, int rhs_target) {
-  SWITCH_OP(op, Op, {
-    SWITCH_TARGET(lhs_target, rhs_target, LhsTarget, RhsTarget, {
-      cpu::SDDMMCsrRedirected<IdType, DType, Op, LhsTarget, RhsTarget>(
-                                                                       bcast, csr, lhs, rhs, out,efeats_redirected);
-    });
-  });
-}
   
 /** @brief Generalized SDDMM on Csr format with Heterograph support. */
 template <int XPU, typename IdType, typename DType>
@@ -106,18 +94,6 @@ template void SDDMMCsr<kDGLCPU, int64_t, double>(
     NDArray lhs, NDArray rhs, NDArray out, int lhs_target, int rhs_target);
 
 
-template void SDDMMCsrRedirected<kDGLCPU, int32_t, float>(
-    const std::string& op, const BcastOff& bcast, const CSRMatrix& csr,
-    NDArray lhs, NDArray rhs, NDArray out, NDArray efeats_redirected,int lhs_target, int rhs_target);
-template void SDDMMCsrRedirected<kDGLCPU, int64_t, float>(
-    const std::string& op, const BcastOff& bcast, const CSRMatrix& csr,
-    NDArray lhs, NDArray rhs, NDArray out, NDArray efeats_redirected,int lhs_target, int rhs_target);
-template void SDDMMCsrRedirected<kDGLCPU, int32_t, double>(
-    const std::string& op, const BcastOff& bcast, const CSRMatrix& csr,
-    NDArray lhs, NDArray rhs, NDArray out, NDArray efeats_redirected,int lhs_target, int rhs_target);
-template void SDDMMCsrRedirected<kDGLCPU, int64_t, double>(
-    const std::string& op, const BcastOff& bcast, const CSRMatrix& csr,
-    NDArray lhs, NDArray rhs, NDArray out, NDArray efeats_redirected,int lhs_target, int rhs_target);
 
   
 template void SDDMMCsrHetero<kDGLCPU, int32_t, float>(

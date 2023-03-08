@@ -2,16 +2,16 @@ import argparse
 import collections
 import time
 
+import dgl
+
 import numpy as np
 import torch as th
 import torch.nn.functional as F
 import torch.nn.init as INIT
 import torch.optim as optim
+from dgl.data.tree import SSTDataset
 from torch.utils.data import DataLoader
 from tree_lstm import TreeLSTM
-
-import dgl
-from dgl.data.tree import SSTDataset
 
 SSTBatch = collections.namedtuple(
     "SSTBatch", ["graph", "mask", "wordid", "label"]
@@ -131,7 +131,7 @@ def main(args):
                 root_ids = [
                     i
                     for i in range(g.number_of_nodes())
-                    if g.out_degree(i) == 0
+                    if g.out_degrees(i) == 0
                 ]
                 root_acc = np.sum(
                     batch.label.cpu().data.numpy()[root_ids]
@@ -170,7 +170,7 @@ def main(args):
             acc = th.sum(th.eq(batch.label, pred)).item()
             accs.append([acc, len(batch.label)])
             root_ids = [
-                i for i in range(g.number_of_nodes()) if g.out_degree(i) == 0
+                i for i in range(g.number_of_nodes()) if g.out_degrees(i) == 0
             ]
             root_acc = np.sum(
                 batch.label.cpu().data.numpy()[root_ids]
@@ -222,7 +222,7 @@ def main(args):
         acc = th.sum(th.eq(batch.label, pred)).item()
         accs.append([acc, len(batch.label)])
         root_ids = [
-            i for i in range(g.number_of_nodes()) if g.out_degree(i) == 0
+            i for i in range(g.number_of_nodes()) if g.out_degrees(i) == 0
         ]
         root_acc = np.sum(
             batch.label.cpu().data.numpy()[root_ids]

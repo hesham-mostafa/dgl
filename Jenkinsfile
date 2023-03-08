@@ -2,7 +2,7 @@
 
 dgl_linux_libs = 'build/libdgl.so, build/runUnitTests, python/dgl/_ffi/_cy3/core.cpython-*-x86_64-linux-gnu.so, build/tensoradapter/pytorch/*.so, build/dgl_sparse/*.so'
 // Currently DGL on Windows is not working with Cython yet
-dgl_win64_libs = "build\\dgl.dll, build\\runUnitTests.exe, build\\tensoradapter\\pytorch\\*.dll"
+dgl_win64_libs = "build\\dgl.dll, build\\runUnitTests.exe, build\\tensoradapter\\pytorch\\*.dll, build\\dgl_sparse\\*.dll"
 
 def init_git() {
   sh 'rm -rf *'
@@ -124,6 +124,7 @@ def is_authorized(name) {
               'hetong007', 'kylasa', 'frozenbugs', 'peizhou001', 'zheng-da',
               'czkkkkkk',
               'nv-dlasalle', 'yaox12', 'chang-l', 'Kh4L', 'VibhuJawa',
+              'kkranen',
               'VoVAllen',
               ]
   return (name in devs)
@@ -133,6 +134,8 @@ def is_admin(name) {
   def admins = ['dgl-bot', 'Rhett-Ying', 'BarclayII', 'jermainewang']
   return (name in admins)
 }
+
+def regression_test_done = false
 
 pipeline {
   agent any
@@ -196,7 +199,6 @@ pipeline {
       }
       when { triggeredBy 'IssueCommentCause' }
       steps {
-        // container('dgl-ci-lint') {
           checkout scm
           script {
               def comment = env.GITHUB_COMMENT
@@ -229,17 +231,33 @@ pipeline {
               }
               pullRequest.comment("Finished the Regression test. Result table is at https://dgl-asv-data.s3-us-west-2.amazonaws.com/${env.GIT_COMMIT}_${instance_type}/results/result.csv. Jenkins job link is ${RUN_DISPLAY_URL}. ")
               currentBuild.result = 'SUCCESS'
-              return
+              regression_test_done = true
           }
-        // }
       }
     }
     stage('CI') {
+      when { expression { !regression_test_done } }
       stages {
+        stage('Abort Previous CI') {
+          steps {
+            script {
+              if (env.BRANCH_NAME != "master") {
+                // Jenkins will abort an older build if a newer build already
+                // passed a higher milestone.
+                // https://www.jenkins.io/doc/pipeline/steps/pipeline-milestone-step/
+                def buildNumber = env.BUILD_NUMBER as int
+                for (int i = 1; i <= buildNumber; i++) {
+                  milestone(i)
+                }
+              }
+            }
+          }
+        }
+
         stage('Lint Check') {
           agent {
             docker {
-              label "linux-cpu-node"
+              label "linux-benchmark-node"
               image "dgllib/dgl-ci-lint"
               alwaysPull true
             }
@@ -261,7 +279,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:v220816"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   args "-u root"
                   alwaysPull true
                 }
@@ -279,7 +297,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-gpu:cu101_v220816"
+                  image "dgllib/dgl-ci-gpu:cu102_v230210"
                   args "-u root"
                   alwaysPull true
                 }
@@ -334,7 +352,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:v220816"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   alwaysPull true
                 }
               }
@@ -351,7 +369,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-gpu-node"
-                  image "dgllib/dgl-ci-gpu:cu101_v220816"
+                  image "dgllib/dgl-ci-gpu:cu102_v230210"
                   args "--runtime nvidia"
                   alwaysPull true
                 }
@@ -380,7 +398,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:v220816"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   alwaysPull true
                 }
               }
@@ -401,7 +419,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-gpu-node"
-                  image "dgllib/dgl-ci-gpu:cu101_v220816"
+                  image "dgllib/dgl-ci-gpu:cu101_v230210"
                   args "--runtime nvidia"
                   alwaysPull true
                 }
@@ -423,7 +441,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:v220816"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   args "--shm-size=4gb"
                   alwaysPull true
                 }
@@ -475,7 +493,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-gpu-node"
-                  image "dgllib/dgl-ci-gpu:cu101_v220816"
+                  image "dgllib/dgl-ci-gpu:cu102_v230210"
                   args "--runtime nvidia --shm-size=8gb"
                   alwaysPull true
                 }
@@ -503,7 +521,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:ssh_v220818"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   args "--shm-size=4gb"
                   alwaysPull true
                 }
@@ -548,7 +566,7 @@ pipeline {
               agent {
                 docker {
                   label "linux-cpu-node"
-                  image "dgllib/dgl-ci-cpu:v220816"
+                  image "dgllib/dgl-ci-cpu:v230210"
                   alwaysPull true
                 }
               }
@@ -586,7 +604,7 @@ pipeline {
               sh("aws s3 sync ./ s3://dgl-ci-result/${JOB_NAME}/${BUILD_NUMBER}/${BUILD_ID}/logs/  --exclude '*' --include '*.log' --acl public-read --content-type text/plain")
               sh("aws s3 sync ./ s3://dgl-ci-result/${JOB_NAME}/${BUILD_NUMBER}/${BUILD_ID}/logs/  --exclude '*.log' --acl public-read")
 
-              def comment = sh(returnStdout: true, script: "python3 status.py").trim()
+              def comment = sh(returnStdout: true, script: "python3 status.py --result ${currentBuild.currentResult}").trim()
               echo(comment)
               if ((env.BRANCH_NAME).startsWith('PR-')) {
                 pullRequest.comment(comment)

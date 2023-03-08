@@ -36,7 +36,7 @@ dgl_option(USE_HDFS "Build with HDFS support" OFF) # Set env HADOOP_HDFS_HOME if
 dgl_option(REBUILD_LIBXSMM "Clean LIBXSMM build cache at every build" OFF) # Set env HADOOP_HDFS_HOME if needed
 dgl_option(USE_EPOLL "Build with epoll for socket communicator" ON)
 dgl_option(TP_BUILD_LIBUV "Build libuv together with tensorpipe (only impacts Linux)" ON)
-dgl_option(BUILD_SPARSE "Build DGL sparse library" OFF)
+dgl_option(BUILD_SPARSE "Build DGL sparse library" ON)
 dgl_option(TORCH_PYTHON_INTERPS "Python interpreter used to build tensoradapter and DGL sparse library" python3)
 
 # Set debug compile option for gdb, only happens when -DCMAKE_BUILD_TYPE=DEBUG
@@ -229,11 +229,11 @@ endif(NOT MSVC)
 # Compile LIBXSMM
 if((NOT MSVC) AND USE_LIBXSMM)
   if(REBUILD_LIBXSMM)
-    add_custom_target(libxsmm COMMAND make realclean COMMAND make -j BLAS=0
+    add_custom_target(libxsmm COMMAND make realclean COMMAND make -j ECFLAGS="-Wno-error=deprecated-declarations" BLAS=0
                       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/libxsmm
                       )
   else(REBUILD_LIBXSMM)
-    add_custom_target(libxsmm COMMAND make -j BLAS=0
+    add_custom_target(libxsmm COMMAND make -j ECFLAGS="-Wno-error=deprecated-declarations" BLAS=0
                       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/libxsmm
                       )
   endif(REBUILD_LIBXSMM)
@@ -247,15 +247,26 @@ if(NOT MSVC)
   # Disable -Wall for third-party tensorpipe due to too many warnings
   string(REPLACE "-Wall" "" CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
   string(REPLACE "-Wall" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  set(WNOERROR_FLAGS "-Wno-error=sign-compare")
+  if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
+      set(WNOERROR_FLAGS "${WNOERROR_FLAGS} -Wno-error=dangling-pointer")
+  endif()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${WNOERROR_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${WNOERROR_FLAGS}")
   set(TP_STATIC_OR_SHARED STATIC)
   add_subdirectory(third_party/tensorpipe)
   list(APPEND DGL_LINKER_LIBS tensorpipe)
   target_include_directories(dgl PRIVATE third_party/tensorpipe)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
+  string(REPLACE "${WNOERROR_FLAGS}" "" CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
+  string(REPLACE "${WNOERROR_FLAGS}" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+
   # Avoid exposing third-party symbols when using DGL as a library.
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,--exclude-libs,ALL")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,--exclude-libs,ALL")
+  if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,--exclude-libs,ALL")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,--exclude-libs,ALL")
+  endif()
 endif(NOT MSVC)
 
 # Compile TVM Runtime and Featgraph
@@ -335,6 +346,7 @@ if(BUILD_CPP_TEST)
   include_directories("third_party/dmlc-core/include")
   include_directories("third_party/phmap")
   include_directories("third_party/libxsmm/include")
+  include_directories("third_party/pcg/include")
   file(GLOB_RECURSE TEST_SRC_FILES ${PROJECT_SOURCE_DIR}/tests/cpp/*.cc)
   add_executable(runUnitTests ${TEST_SRC_FILES})
   target_link_libraries(runUnitTests gtest gtest_main)
@@ -353,6 +365,46 @@ if(BUILD_CPP_TEST)
 endif(BUILD_CPP_TEST)
 
 if(BUILD_SPARSE)
-  set(DGL_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  add_subdirectory(dgl_sparse)
+  message(STATUS "Configuring DGL sparse library")
+  file(TO_NATIVE_PATH ${CMAKE_CURRENT_BINARY_DIR} BINDIR)
+  file(TO_NATIVE_PATH ${CMAKE_COMMAND} CMAKE_CMD)
+  get_target_property(DGL_INCLUDE_DIRS dgl INCLUDE_DIRECTORIES)
+  message(STATUS "DGL include directories: ${DGL_INCLUDE_DIRS}")
+  message(STATUS "DGL link directories: ${DGL_INCLUDE_DIRS}")
+  if(MSVC)
+    file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/dgl_sparse/build.bat BUILD_SCRIPT)
+    add_custom_target(
+      dgl_sparse
+      ALL
+      ${CMAKE_COMMAND} -E env
+      CMAKE_COMMAND=${CMAKE_CMD}
+      CUDA_TOOLKIT_ROOT_DIR=${CUDA_TOOLKIT_ROOT_DIR}
+      USE_CUDA=${USE_CUDA}
+      BINDIR=${BINDIR}
+      INCLUDEDIR="${DGL_INCLUDE_DIRS}"
+      CFLAGS=${CMAKE_C_FLAGS}
+      CXXFLAGS=${CMAKE_CXX_FLAGS}
+      LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
+      cmd /e:on /c ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
+      DEPENDS ${BUILD_SCRIPT}
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/dgl_sparse)
+  else(MSVC)
+    file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/dgl_sparse/build.sh BUILD_SCRIPT)
+    add_custom_target(
+      dgl_sparse
+      ALL
+      ${CMAKE_COMMAND} -E env
+      CMAKE_COMMAND=${CMAKE_CMD}
+      CUDA_TOOLKIT_ROOT_DIR=${CUDA_TOOLKIT_ROOT_DIR}
+      USE_CUDA=${USE_CUDA}
+      BINDIR=${CMAKE_CURRENT_BINARY_DIR}
+      INCLUDEDIR="${DGL_INCLUDE_DIRS}"
+      CFLAGS=${CMAKE_C_FLAGS}
+      CXXFLAGS=${CMAKE_CXX_FLAGS}
+      LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
+      bash ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
+      DEPENDS ${BUILD_SCRIPT}
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/dgl_sparse)
+  endif(MSVC)
+  add_dependencies(dgl_sparse dgl)
 endif(BUILD_SPARSE)

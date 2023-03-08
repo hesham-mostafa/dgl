@@ -1,7 +1,8 @@
+from copy import deepcopy
+from heapq import heapify, heappop, heappush, nsmallest
+
 import dgl
 import numpy as np
-from heapq import heappush, heappop, heapify, nsmallest
-from copy import deepcopy
 
 # We use lapjv implementation (https://github.com/src-d/lapjv) to solve assignment problem, because of its scalability
 # Also see https://github.com/berhane/LAP-solvers for benchmarking of LAP solvers
@@ -179,7 +180,7 @@ def get_edges_to_match(G, node_id, matched_nodes):
     index = np.array([], dtype=int)
     direction = np.array([], dtype=int)
     if G.has_edge_between(node_id, node_id):
-        self_edge_ids = G.edge_id(node_id, node_id, return_array=True).numpy()
+        self_edge_ids = G.edge_ids(node_id, node_id, return_array=True).numpy()
         incident_edges = np.concatenate((incident_edges, self_edge_ids))
         index = np.concatenate((index, [-1] * len(self_edge_ids)))
         direction = np.concatenate((direction, [0] * len(self_edge_ids)))
@@ -247,7 +248,6 @@ class search_tree_node:
         cost_matrix_nodes,
         cost_matrix_edges,
     ):
-
         self.matched_cost = parent_matched_cost
         self.future_approximate_cost = 0.0
         self.matched_nodes = deepcopy(parent_matched_nodes)
@@ -647,7 +647,7 @@ def contextual_cost_matrix_construction(
     for i in range(num_G1_nodes):
         if G1.has_edge_between(i, i):
             self_edge_list_G1[i] = sorted(
-                G1.edge_id(i, i, return_array=True).numpy()
+                G1.edge_ids(i, i, return_array=True).numpy()
             )
         incoming_edges_G1[i] = G1.in_edges([i], "eid").numpy()
         incoming_edges_G1[i] = np.setdiff1d(
@@ -660,7 +660,7 @@ def contextual_cost_matrix_construction(
     for i in range(num_G2_nodes):
         if G2.has_edge_between(i, i):
             self_edge_list_G2[i] = sorted(
-                G2.edge_id(i, i, return_array=True).numpy()
+                G2.edge_ids(i, i, return_array=True).numpy()
             )
         incoming_edges_G2[i] = G2.in_edges([i], "eid").numpy()
         incoming_edges_G2[i] = np.setdiff1d(
@@ -790,7 +790,7 @@ def hausdorff_matching(
     for i in range(num_G1_nodes):
         if G1.has_edge_between(i, i):
             self_edge_list_G1[i] = sorted(
-                G1.edge_id(i, i, return_array=True).numpy()
+                G1.edge_ids(i, i, return_array=True).numpy()
             )
         incoming_edges_G1[i] = G1.in_edges([i], "eid").numpy()
         incoming_edges_G1[i] = np.setdiff1d(
@@ -803,7 +803,7 @@ def hausdorff_matching(
     for i in range(num_G2_nodes):
         if G2.has_edge_between(i, i):
             self_edge_list_G2[i] = sorted(
-                G2.edge_id(i, i, return_array=True).numpy()
+                G2.edge_ids(i, i, return_array=True).numpy()
             )
         incoming_edges_G2[i] = G2.in_edges([i], "eid").numpy()
         incoming_edges_G2[i] = np.setdiff1d(
@@ -1156,7 +1156,6 @@ def graph_edit_distance(
     algorithm="bipartite",
     max_beam_size=100,
 ):
-
     """Returns GED (graph edit distance) between DGLGraphs G1 and G2.
 
 

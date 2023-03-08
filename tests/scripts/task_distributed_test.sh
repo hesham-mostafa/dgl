@@ -30,12 +30,10 @@ export CUDA_VISIBLE_DEVICES=-1
 
 conda activate ${DGLBACKEND}-ci
 
-python3 -m pip install pytest psutil pyyaml pydantic pandas rdflib ogb filelock pyarrow || fail "pip install"
-
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export DMLC_LOG_DEBUG=1
 
 python3 -m pytest -v --capture=tee-sys --junitxml=pytest_distributed.xml --durations=100 tests/distributed/*.py || fail "distributed"
 
-PYTHONPATH=tools:$PYTHONPATH python3 -m pytest -v --capture=tee-sys --junitxml=pytest_tools.xml --durations=100 tests/tools/*.py || fail "tools"
+PYTHONPATH=tools:tools/distpartitioning:$PYTHONPATH python3 -m pytest -v --capture=tee-sys --junitxml=pytest_tools.xml --durations=100 tests/tools/*.py || fail "tools"

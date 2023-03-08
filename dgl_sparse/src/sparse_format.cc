@@ -17,15 +17,16 @@ namespace sparse {
 std::shared_ptr<COO> COOFromOldDGLCOO(const aten::COOMatrix& dgl_coo) {
   auto row = DGLArrayToTorchTensor(dgl_coo.row);
   auto col = DGLArrayToTorchTensor(dgl_coo.col);
-  CHECK(aten::IsNullArray(dgl_coo.data));
+  TORCH_CHECK(aten::IsNullArray(dgl_coo.data));
+  auto indices = torch::stack({row, col});
   return std::make_shared<COO>(
-      COO{dgl_coo.num_rows, dgl_coo.num_cols, row, col, dgl_coo.row_sorted,
+      COO{dgl_coo.num_rows, dgl_coo.num_cols, indices, dgl_coo.row_sorted,
           dgl_coo.col_sorted});
 }
 
 aten::COOMatrix COOToOldDGLCOO(const std::shared_ptr<COO>& coo) {
-  auto row = TorchTensorToDGLArray(coo->row);
-  auto col = TorchTensorToDGLArray(coo->col);
+  auto row = TorchTensorToDGLArray(coo->indices.index({0}));
+  auto col = TorchTensorToDGLArray(coo->indices.index({1}));
   return aten::COOMatrix(
       coo->num_rows, coo->num_cols, row, col, aten::NullArray(),
       coo->row_sorted, coo->col_sorted);
@@ -46,6 +47,18 @@ aten::CSRMatrix CSRToOldDGLCSR(const std::shared_ptr<CSR>& csr) {
   auto data = OptionalTorchTensorToDGLArray(csr->value_indices);
   return aten::CSRMatrix(
       csr->num_rows, csr->num_cols, indptr, indices, data, csr->sorted);
+}
+
+torch::Tensor COOToTorchCOO(
+    const std::shared_ptr<COO>& coo, torch::Tensor value) {
+  torch::Tensor indices = coo->indices;
+  if (value.ndimension() == 2) {
+    return torch::sparse_coo_tensor(
+        indices, value, {coo->num_rows, coo->num_cols, value.size(1)});
+  } else {
+    return torch::sparse_coo_tensor(
+        indices, value, {coo->num_rows, coo->num_cols});
+  }
 }
 
 std::shared_ptr<COO> CSRToCOO(const std::shared_ptr<CSR>& csr) {
@@ -84,6 +97,12 @@ std::shared_ptr<CSR> CSRToCSC(const std::shared_ptr<CSR>& csr) {
   auto dgl_csr = CSRToOldDGLCSR(csr);
   auto dgl_csc = aten::CSRTranspose(dgl_csr);
   return CSRFromOldDGLCSR(dgl_csc);
+}
+
+std::shared_ptr<COO> COOTranspose(const std::shared_ptr<COO>& coo) {
+  auto dgl_coo = COOToOldDGLCOO(coo);
+  auto dgl_coo_tr = aten::COOTranspose(dgl_coo);
+  return COOFromOldDGLCOO(dgl_coo_tr);
 }
 
 }  // namespace sparse

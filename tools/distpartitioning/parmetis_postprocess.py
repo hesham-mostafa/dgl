@@ -5,11 +5,12 @@ import platform
 import sys
 from pathlib import Path
 
+import constants
+
 import numpy as np
 import pyarrow
 import pyarrow.csv as csv
-
-import constants
+from partition_algo.base import dump_partition_meta, PartitionMeta
 from utils import get_idranges, get_node_types, read_json
 
 
@@ -26,11 +27,16 @@ def post_process(params):
     """
     logging.info("Starting to process parmetis output.")
 
+    logging.info(params.postproc_input_dir)
     logging.info(params.schema_file)
     logging.info(params.parmetis_output_file)
-    assert os.path.isfile(params.schema_file)
+    assert os.path.isfile(
+        os.path.join(params.postproc_input_dir, params.schema_file)
+    )
     assert os.path.isfile(params.parmetis_output_file)
-    schema = read_json(params.schema_file)
+    schema = read_json(
+        os.path.join(params.postproc_input_dir, params.schema_file)
+    )
 
     metis_df = csv.read_csv(
         params.parmetis_output_file,
@@ -39,6 +45,7 @@ def post_process(params):
     )
     global_nids = metis_df["f0"].to_numpy()
     partition_ids = metis_df["f1"].to_numpy()
+    num_parts = np.unique(partition_ids).size
 
     sort_idx = np.argsort(global_nids)
     global_nids = global_nids[sort_idx]
@@ -47,7 +54,12 @@ def post_process(params):
     ntypes_ntypeid_map, ntypes, ntid_ntype_map = get_node_types(schema)
     type_nid_dict, ntype_gnid_offset = get_idranges(
         schema[constants.STR_NODE_TYPE],
-        schema[constants.STR_NUM_NODES_PER_CHUNK],
+        dict(
+            zip(
+                schema[constants.STR_NODE_TYPE],
+                schema[constants.STR_NUM_NODES_PER_TYPE],
+            )
+        ),
     )
 
     outdir = Path(params.partitions_dir)
@@ -66,6 +78,13 @@ def post_process(params):
             options,
         )
         logging.info(f"Generated {out_file}")
+
+    # generate partition meta file.
+    part_meta = PartitionMeta(
+        version="1.0.0", num_parts=num_parts, algo_name="metis"
+    )
+    dump_partition_meta(part_meta, os.path.join(outdir, "partition_meta.json"))
+
     logging.info("Done processing parmetis output")
 
 
@@ -91,6 +110,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="PostProcessing the ParMETIS\
         output for partitioning pipeline"
+    )
+    parser.add_argument(
+        "--postproc_input_dir",
+        required=True,
+        type=str,
+        help="Base directory for post processing step.",
     )
     parser.add_argument(
         "--schema_file",

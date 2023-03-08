@@ -1,16 +1,20 @@
 import argparse
 import time
 
+import dgl
+
 import mxnet as mx
 import networkx as nx
 import numpy as np
+from dgl.data import (
+    CiteseerGraphDataset,
+    CoraGraphDataset,
+    PubmedGraphDataset,
+    register_data_args,
+)
+from dgl.nn.mxnet.conv import GMMConv
 from mxnet import gluon, nd
 from mxnet.gluon import nn
-
-import dgl
-from dgl.data import (CiteseerGraphDataset, CoraGraphDataset,
-                      PubmedGraphDataset, register_data_args)
-from dgl.nn.mxnet.conv import GMMConv
 
 
 class MoNet(nn.Block):
@@ -118,7 +122,7 @@ def main(args):
     pseudo = []
     for i in range(g.number_of_edges()):
         pseudo.append(
-            [1 / np.sqrt(g.in_degree(us[i])), 1 / np.sqrt(g.in_degree(vs[i]))]
+            [1 / np.sqrt(g.in_degrees(us[i])), 1 / np.sqrt(g.in_degrees(vs[i]))]
         )
     pseudo = nd.array(pseudo, ctx=ctx)
 

@@ -25,16 +25,15 @@ enum SparseFormat { kCOO, kCSR, kCSC };
 struct COO {
   /** @brief The shape of the matrix. */
   int64_t num_rows = 0, num_cols = 0;
-  /** @brief COO format row indices array of the matrix. */
-  torch::Tensor row;
-  /** @brief COO format column indices array of the matrix. */
-  torch::Tensor col;
+  /**
+   * @brief COO tensor of shape (2, nnz), stacking the row and column indices.
+   */
+  torch::Tensor indices;
   /** @brief Whether the row indices are sorted. */
   bool row_sorted = false;
   /** @brief Whether the column indices per row are sorted. */
   bool col_sorted = false;
 };
-
 
 /** @brief CSR sparse structure. */
 struct CSR {
@@ -63,6 +62,16 @@ std::shared_ptr<CSR> CSRFromOldDGLCSR(const aten::CSRMatrix& dgl_csr);
 /** @brief Convert a CSR in the sparse library to an old DGL CSR matrix. */
 aten::CSRMatrix CSRToOldDGLCSR(const std::shared_ptr<CSR>& csr);
 
+/**
+ *  @brief Convert a COO and its nonzero values to a Torch COO matrix.
+ *  @param coo The COO format in the sparse library
+ *  @param value Values of the sparse matrix
+ *
+ *  @return Torch Sparse Tensor in COO format
+ */
+torch::Tensor COOToTorchCOO(
+    const std::shared_ptr<COO>& coo, torch::Tensor value);
+
 /** @brief Convert a CSR format to COO format. */
 std::shared_ptr<COO> CSRToCOO(const std::shared_ptr<CSR>& csr);
 
@@ -80,6 +89,9 @@ std::shared_ptr<CSR> COOToCSC(const std::shared_ptr<COO>& coo);
 
 /** @brief Convert a CSR format to CSC format. */
 std::shared_ptr<CSR> CSRToCSC(const std::shared_ptr<CSR>& csr);
+
+/** @brief COO transposition. */
+std::shared_ptr<COO> COOTranspose(const std::shared_ptr<COO>& coo);
 
 }  // namespace sparse
 }  // namespace dgl

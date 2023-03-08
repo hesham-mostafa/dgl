@@ -1,11 +1,11 @@
 import argparse
 
+import dgl
+import dgl.nn as dglnn
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import dgl
-import dgl.nn as dglnn
 from dgl import AddSelfLoop
 from dgl.data import CiteseerGraphDataset, CoraGraphDataset, PubmedGraphDataset
 
@@ -93,12 +93,6 @@ if __name__ == "__main__":
     features = g.ndata["feat"]
     labels = g.ndata["label"]
     masks = g.ndata["train_mask"], g.ndata["val_mask"], g.ndata["test_mask"]
-
-    # normalization
-    degs = g.in_degrees().float()
-    norm = torch.pow(degs, -0.5).to(device)
-    norm[torch.isinf(norm)] = 0
-    g.ndata["norm"] = norm.unsqueeze(1)
 
     # create GCN model
     in_size = features.shape[1]

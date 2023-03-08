@@ -11,14 +11,11 @@ import unittest
 from multiprocessing import Condition, Manager, Process, Value
 
 import backend as F
+
+import dgl
 import numpy as np
 import pytest
 import torch as th
-from numpy.testing import assert_almost_equal, assert_array_equal
-from scipy import sparse as spsp
-from utils import create_random_graph, generate_ip_config, reset_envs
-
-import dgl
 from dgl.data.utils import load_graphs, save_graphs
 from dgl.distributed import (
     DistEmbedding,
@@ -32,6 +29,9 @@ from dgl.distributed import (
 )
 from dgl.distributed.optim import SparseAdagrad
 from dgl.heterograph_index import create_unitgraph_from_coo
+from numpy.testing import assert_almost_equal, assert_array_equal
+from scipy import sparse as spsp
+from utils import create_random_graph, generate_ip_config, reset_envs
 
 if os.name != "nt":
     import fcntl
@@ -119,7 +119,7 @@ def run_client_empty(
     os.environ["DGL_NUM_SERVER"] = str(server_count)
     dgl.distributed.initialize("kv_ip_config.txt")
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     check_dist_graph_empty(g, num_clients, num_nodes, num_edges)
@@ -165,9 +165,11 @@ def check_server_client_empty(shared_mem, num_servers, num_clients):
 
     for p in cli_ps:
         p.join()
+        assert p.exitcode == 0
 
     for p in serv_ps:
         p.join()
+        assert p.exitcode == 0
 
     print("clients have terminated")
 
@@ -185,7 +187,7 @@ def run_client(
     os.environ["DGL_GROUP_ID"] = str(group_id)
     dgl.distributed.initialize("kv_ip_config.txt")
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     check_dist_graph(g, num_clients, num_nodes, num_edges)
@@ -204,7 +206,7 @@ def run_emb_client(
     os.environ["DGL_GROUP_ID"] = str(group_id)
     dgl.distributed.initialize("kv_ip_config.txt")
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     check_dist_emb(g, num_clients, num_nodes, num_edges)
@@ -228,7 +230,7 @@ def run_optim_client(
         backend="gloo", rank=rank, world_size=world_size
     )
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     check_dist_optim_store(rank, num_nodes, optimizer_states, save)
@@ -277,7 +279,7 @@ def run_client_hierarchy(
     os.environ["DGL_NUM_SERVER"] = str(server_count)
     dgl.distributed.initialize("kv_ip_config.txt")
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     node_mask = F.tensor(node_mask)
@@ -528,6 +530,7 @@ def check_dist_emb_server_client(
         dgl.distributed.shutdown_servers("kv_ip_config.txt", num_servers)
     for p in serv_ps:
         p.join()
+        assert p.exitcode == 0
 
     print("clients have terminated")
 
@@ -585,6 +588,7 @@ def check_server_client(shared_mem, num_servers, num_clients, num_groups=1):
             cli_ps.append(p)
     for p in cli_ps:
         p.join()
+        assert p.exitcode == 0
 
     if keep_alive:
         for p in serv_ps:
@@ -593,6 +597,7 @@ def check_server_client(shared_mem, num_servers, num_clients, num_groups=1):
         dgl.distributed.shutdown_servers("kv_ip_config.txt", num_servers)
     for p in serv_ps:
         p.join()
+        assert p.exitcode == 0
 
     print("clients have terminated")
 
@@ -659,9 +664,10 @@ def check_server_client_hierarchy(shared_mem, num_servers, num_clients):
 
     for p in cli_ps:
         p.join()
+        assert p.exitcode == 0
     for p in serv_ps:
         p.join()
-
+        assert p.exitcode == 0
     nodes1 = []
     edges1 = []
     for n, e in return_dict.values():
@@ -681,7 +687,7 @@ def run_client_hetero(
     os.environ["DGL_NUM_SERVER"] = str(server_count)
     dgl.distributed.initialize("kv_ip_config.txt")
     gpb, graph_name, _, _ = load_partition_book(
-        "/tmp/dist_graph/{}.json".format(graph_name), part_id, None
+        "/tmp/dist_graph/{}.json".format(graph_name), part_id
     )
     g = DistGraph(graph_name, gpb=gpb)
     check_dist_graph_hetero(g, num_clients, num_nodes, num_edges)
@@ -706,13 +712,13 @@ def create_random_hetero():
     # data with same name as ntype/etype is assigned on purpose to verify
     # such same names can be correctly handled in DistGraph. See more details
     # in issue #4887 and #4463 on github.
-    ntype = 'n1'
-    for name in ['feat', ntype]:
+    ntype = "n1"
+    for name in ["feat", ntype]:
         g.nodes[ntype].data[name] = F.unsqueeze(
             F.arange(0, g.num_nodes(ntype)), 1
         )
-    etype = 'r1'
-    for name in ['feat', etype]:
+    etype = "r1"
+    for name in ["feat", etype]:
         g.edges[etype].data[name] = F.unsqueeze(
             F.arange(0, g.num_edges(etype)), 1
         )
@@ -736,24 +742,24 @@ def check_dist_graph_hetero(g, num_clients, num_nodes, num_edges):
     assert g.number_of_edges() == sum([num_edges[etype] for etype in num_edges])
 
     # Test reading node data
-    ntype = 'n1'
+    ntype = "n1"
     nids = F.arange(0, g.num_nodes(ntype) // 2)
-    for name in ['feat', ntype]:
+    for name in ["feat", ntype]:
         data = g.nodes[ntype].data[name][nids]
         data = F.squeeze(data, 1)
         assert np.all(F.asnumpy(data == nids))
-    assert len(g.nodes['n2'].data) == 0
+    assert len(g.nodes["n2"].data) == 0
     expect_except = False
     try:
-        g.nodes['xxx'].data['x']
+        g.nodes["xxx"].data["x"]
     except dgl.DGLError:
         expect_except = True
     assert expect_except
 
     # Test reading edge data
-    etype = 'r1'
+    etype = "r1"
     eids = F.arange(0, g.num_edges(etype) // 2)
-    for name in ['feat', etype]:
+    for name in ["feat", etype]:
         # access via etype
         data = g.edges[etype].data[name][eids]
         data = F.squeeze(data, 1)
@@ -763,10 +769,10 @@ def check_dist_graph_hetero(g, num_clients, num_nodes, num_edges):
         data = g.edges[c_etype].data[name][eids]
         data = F.squeeze(data, 1)
         assert np.all(F.asnumpy(data == eids))
-    assert len(g.edges['r2'].data) == 0
+    assert len(g.edges["r2"].data) == 0
     expect_except = False
     try:
-        g.edges['xxx'].data['x']
+        g.edges["xxx"].data["x"]
     except dgl.DGLError:
         expect_except = True
     assert expect_except
@@ -889,9 +895,11 @@ def check_server_client_hetero(shared_mem, num_servers, num_clients):
 
     for p in cli_ps:
         p.join()
+        assert p.exitcode == 0
 
     for p in serv_ps:
         p.join()
+        assert p.exitcode == 0
 
     print("clients have terminated")
 
@@ -1022,6 +1030,7 @@ def check_dist_optim_server_client(
 
     for p in serv_ps:
         p.join()
+        assert p.exitcode == 0
 
 
 @unittest.skipIf(

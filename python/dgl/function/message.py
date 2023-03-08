@@ -5,23 +5,13 @@ import sys
 from itertools import product
 
 from .base import BuiltinFunction, TargetCode
-from .._deprecate.runtime import ir
-from .._deprecate.runtime.ir import var
 
 
-__all__ = ["src_mul_edge", "copy_src", "copy_edge", "copy_u", "copy_e",
-           "BinaryMessageFunction", "CopyMessageFunction"]
+__all__ = ["copy_u", "copy_e", "BinaryMessageFunction", "CopyMessageFunction"]
 
 
 class MessageFunction(BuiltinFunction):
     """Base builtin message function class."""
-
-    def _invoke(self, graph, src_frame, dst_frame, edge_frame, out_size,
-                src_map, dst_map, edge_map, out_map, reducer="none"):
-        """Symbolic computation of this builtin function to create
-        runtime.executor
-        """
-        raise NotImplementedError
 
     @property
     def name(self):
@@ -34,8 +24,9 @@ class BinaryMessageFunction(MessageFunction):
 
     See Also
     --------
-    src_mul_edge
+    u_mul_e
     """
+
     def __init__(self, binary_op, lhs, rhs, lhs_field, rhs_field, out_field):
         self.binary_op = binary_op
         self.lhs = lhs
@@ -43,23 +34,6 @@ class BinaryMessageFunction(MessageFunction):
         self.lhs_field = lhs_field
         self.rhs_field = rhs_field
         self.out_field = out_field
-
-    def _invoke(self, graph, src_frame, dst_frame, edge_frame, out_size,
-                src_map, dst_map, edge_map, out_map, reducer="none"):
-        """Symbolic computation of builtin binary message function to create
-        runtime.executor
-        """
-        graph = var.GRAPH(graph)
-        in_frames = (src_frame, dst_frame, edge_frame)
-        in_maps = (src_map, dst_map, edge_map)
-        lhs_data = ir.READ_COL(in_frames[self.lhs], var.STR(self.lhs_field))
-        rhs_data = ir.READ_COL(in_frames[self.rhs], var.STR(self.rhs_field))
-        lhs_map = var.MAP(in_maps[self.lhs])
-        rhs_map = var.MAP(in_maps[self.rhs])
-        out_map = var.MAP(out_map)
-        return ir.BINARY_REDUCE(reducer, self.binary_op, graph, self.lhs,
-                                self.rhs, lhs_data, rhs_data, out_size,
-                                lhs_map, rhs_map, out_map)
 
     @property
     def name(self):
@@ -73,26 +47,13 @@ class CopyMessageFunction(MessageFunction):
 
     See Also
     --------
-    copy_src
+    copy_u
     """
+
     def __init__(self, target, in_field, out_field):
         self.target = target
         self.in_field = in_field
         self.out_field = out_field
-
-    def _invoke(self, graph, src_frame, dst_frame, edge_frame, out_size,
-                src_map, dst_map, edge_map, out_map, reducer="none"):
-        """Symbolic computation of builtin message function to create
-        runtime.executor
-        """
-        graph = var.GRAPH(graph)
-        in_frames = (src_frame, dst_frame, edge_frame)
-        in_maps = (src_map, dst_map, edge_map)
-        in_data = ir.READ_COL(in_frames[self.target], var.STR(self.in_field))
-        in_map = var.MAP(in_maps[self.target])
-        out_map = var.MAP(out_map)
-        return ir.COPY_REDUCE(reducer, graph, self.target, in_data, out_size,
-                              in_map, out_map)
 
     @property
     def name(self):
@@ -191,17 +152,25 @@ def _gen_message_builtin(lhs, rhs, binary_op):
     --------
     >>> import dgl
     >>> message_func = dgl.function.{}('h', 'h', 'm')
-    """.format(binary_op,
-               TargetCode.CODE2STR[_TARGET_MAP[lhs]],
-               TargetCode.CODE2STR[_TARGET_MAP[rhs]],
-               TargetCode.CODE2STR[_TARGET_MAP[lhs]],
-               TargetCode.CODE2STR[_TARGET_MAP[rhs]],
-               name)
+    """.format(
+        binary_op,
+        TargetCode.CODE2STR[_TARGET_MAP[lhs]],
+        TargetCode.CODE2STR[_TARGET_MAP[rhs]],
+        TargetCode.CODE2STR[_TARGET_MAP[lhs]],
+        TargetCode.CODE2STR[_TARGET_MAP[rhs]],
+        name,
+    )
 
     def func(lhs_field, rhs_field, out):
         return BinaryMessageFunction(
-            binary_op, _TARGET_MAP[lhs],
-            _TARGET_MAP[rhs], lhs_field, rhs_field, out)
+            binary_op,
+            _TARGET_MAP[lhs],
+            _TARGET_MAP[rhs],
+            lhs_field,
+            rhs_field,
+            out,
+        )
+
     func.__name__ = name
     func.__doc__ = docstring
     return func
@@ -217,87 +186,5 @@ def _register_builtin_message_func():
                 setattr(sys.modules[__name__], func.__name__, func)
                 __all__.append(func.__name__)
 
+
 _register_builtin_message_func()
-
-
-##############################################################################
-# For backward compatibility
-
-def src_mul_edge(src, edge, out):
-    """Builtin message function that computes message by performing
-    binary operation mul between src feature and edge feature.
-
-    Notes
-    -----
-    This function is deprecated. Please use :func:`~dgl.function.u_mul_e` instead.
-
-    Parameters
-    ----------
-    src : str
-        The source feature field.
-    edge : str
-        The edge feature field.
-    out : str
-        The output message field.
-
-    Examples
-    --------
-    >>> import dgl
-    >>> message_func = dgl.function.src_mul_edge('h', 'e', 'm')
-    """
-    return getattr(sys.modules[__name__], "u_mul_e")(src, edge, out)
-
-
-def copy_src(src, out):
-    """Builtin message function that computes message using source node
-    feature.
-
-    Notes
-    -----
-    This function is deprecated. Please use :func:`~dgl.function.copy_u` instead.
-
-    Parameters
-    ----------
-    src : str
-        The source feature field.
-    out : str
-        The output message field.
-
-    Examples
-    --------
-    >>> import dgl
-    >>> message_func = dgl.function.copy_src('h', 'm')
-
-    The above example is equivalent to the following user defined function:
-
-    >>> def message_func(edges):
-    >>>     return {'m': edges.src['h']}
-    """
-    return copy_u(src, out)
-
-
-def copy_edge(edge, out):
-    """Builtin message function that computes message using edge feature.
-
-    Notes
-    -----
-    This function is deprecated. Please use :func:`~dgl.function.copy_e` instead.
-
-    Parameters
-    ----------
-    edge : str
-        The edge feature field.
-    out : str
-        The output message field.
-
-    Examples
-    --------
-    >>> import dgl
-    >>> message_func = dgl.function.copy_edge('h', 'm')
-
-    The above example is equivalent to the following user defined function:
-
-    >>> def message_func(edges):
-    >>>     return {'m': edges.data['h']}
-    """
-    return copy_e(edge, out)

@@ -2,10 +2,8 @@
 # pylint: disable=not-callable
 import numpy as np
 
-from . import backend as F
-from . import function as fn
-from . import ops
-from .base import ALL, EID, NID, DGLError, dgl_warning, is_all
+from . import backend as F, function as fn, ops
+from .base import ALL, dgl_warning, DGLError, EID, is_all, NID
 from .frame import Frame
 from .udf import EdgeBatch, NodeBatch
 
@@ -302,7 +300,7 @@ def invoke_gsddmm(graph, func):
 
 
 def invoke_gspmm(
-        graph, mfunc, rfunc, *, srcdata=None, dstdata=None, edata=None, efeats_redirected=None):
+        graph, mfunc, rfunc, *, srcdata=None, dstdata=None, edata=None):
     """Invoke g-SPMM computation on the graph.
 
     Parameters
@@ -348,7 +346,7 @@ def invoke_gspmm(
             lhs_target, _, rhs_target = mfunc.name.split("_", 2)
             x = data_dict_to_list(graph, x, mfunc, lhs_target)
             y = data_dict_to_list(graph, y, mfunc, rhs_target)
-        z = op(graph, x, y, efeats_redirected=efeats_redirected)
+        z = op(graph, x, y)
 
     else:
         x = alldata[mfunc.target][mfunc.in_field]
@@ -358,7 +356,7 @@ def invoke_gspmm(
                 x = data_dict_to_list(graph, x, mfunc, "u")
             else:  # "copy_e"
                 x = data_dict_to_list(graph, x, mfunc, "e")
-        z = op(graph, x, efeats_redirected)
+        z = op(graph, x)
 
     return {rfunc.out_field: z}
 
@@ -385,7 +383,7 @@ def message_passing_partial(g, mfunc, rfunc, afunc,
                        "builting message and aggregation")
 
 
-def message_passing(g, mfunc, rfunc, afunc, efeats_redirected=None):
+def message_passing(g, mfunc, rfunc, afunc):
     """Invoke message passing computation on the whole graph.
 
     Parameters
@@ -412,7 +410,7 @@ def message_passing(g, mfunc, rfunc, afunc, efeats_redirected=None):
     ):
         # invoke fused message passing
         ndata = invoke_gspmm(
-            g, mfunc, rfunc, efeats_redirected=efeats_redirected)
+            g, mfunc, rfunc)
     else:
         # invoke message passing in two separate steps
         # message phase

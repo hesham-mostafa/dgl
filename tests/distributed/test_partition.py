@@ -1,30 +1,32 @@
+import json
 import os
+import tempfile
 
 import backend as F
-import torch as th
 import dgl
 import numpy as np
 import pytest
+import torch as th
 from dgl import function as fn
 from dgl.distributed import (
     load_partition,
+    load_partition_book,
     load_partition_feats,
     partition_graph,
 )
 from dgl.distributed.graph_partition_book import (
+    _etype_tuple_to_str,
     DEFAULT_ETYPE,
     DEFAULT_NTYPE,
-    BasicPartitionBook,
     EdgePartitionPolicy,
     HeteroDataName,
     NodePartitionPolicy,
     RangePartitionBook,
-    _etype_tuple_to_str,
 )
 from dgl.distributed.partition import (
-    RESERVED_FIELD_DTYPE,
     _get_inner_edge_mask,
     _get_inner_node_mask,
+    RESERVED_FIELD_DTYPE,
 )
 from scipy import sparse as spsp
 from utils import reset_envs
@@ -226,7 +228,6 @@ def check_hetero_partition(
         "/tmp/partition",
         num_hops=num_hops,
         part_method=part_method,
-        reshuffle=True,
         return_mapping=True,
         num_trainers_per_machine=num_trainers_per_machine,
         graph_formats=graph_formats,
@@ -328,7 +329,6 @@ def check_hetero_partition(
 def check_partition(
     g,
     part_method,
-    reshuffle,
     num_parts=4,
     num_trainers_per_machine=1,
     load_feats=True,
@@ -341,8 +341,8 @@ def check_partition(
     g.edata["feats"] = F.tensor(
         np.random.randn(g.number_of_edges(), 10), F.float32
     )
-    g.update_all(fn.copy_src("feats", "msg"), fn.sum("msg", "h"))
-    g.update_all(fn.copy_edge("feats", "msg"), fn.sum("msg", "eh"))
+    g.update_all(fn.copy_u("feats", "msg"), fn.sum("msg", "h"))
+    g.update_all(fn.copy_e("feats", "msg"), fn.sum("msg", "eh"))
     num_hops = 2
 
     orig_nids, orig_eids = partition_graph(
@@ -352,7 +352,6 @@ def check_partition(
         "/tmp/partition",
         num_hops=num_hops,
         part_method=part_method,
-        reshuffle=reshuffle,
         return_mapping=True,
         num_trainers_per_machine=num_trainers_per_machine,
         graph_formats=graph_formats,
@@ -445,27 +444,15 @@ def check_partition(
         assert F.shape(orig_eids1)[0] == F.shape(orig_eids2)[0]
         assert np.all(F.asnumpy(orig_eids1) == F.asnumpy(orig_eids2))
 
-        if reshuffle:
-            local_orig_nids = orig_nids[part_g.ndata[dgl.NID]]
-            local_orig_eids = orig_eids[part_g.edata[dgl.EID]]
-            part_g.ndata["feats"] = F.gather_row(
-                g.ndata["feats"], local_orig_nids
-            )
-            part_g.edata["feats"] = F.gather_row(
-                g.edata["feats"], local_orig_eids
-            )
-            local_nodes = orig_nids[local_nodes]
-            local_edges = orig_eids[local_edges]
-        else:
-            part_g.ndata["feats"] = F.gather_row(
-                g.ndata["feats"], part_g.ndata[dgl.NID]
-            )
-            part_g.edata["feats"] = F.gather_row(
-                g.edata["feats"], part_g.edata[dgl.NID]
-            )
+        local_orig_nids = orig_nids[part_g.ndata[dgl.NID]]
+        local_orig_eids = orig_eids[part_g.edata[dgl.EID]]
+        part_g.ndata["feats"] = F.gather_row(g.ndata["feats"], local_orig_nids)
+        part_g.edata["feats"] = F.gather_row(g.edata["feats"], local_orig_eids)
+        local_nodes = orig_nids[local_nodes]
+        local_edges = orig_eids[local_edges]
 
-        part_g.update_all(fn.copy_src("feats", "msg"), fn.sum("msg", "h"))
-        part_g.update_all(fn.copy_edge("feats", "msg"), fn.sum("msg", "eh"))
+        part_g.update_all(fn.copy_u("feats", "msg"), fn.sum("msg", "h"))
+        part_g.update_all(fn.copy_e("feats", "msg"), fn.sum("msg", "eh"))
         assert F.allclose(
             F.gather_row(g.ndata["h"], local_nodes),
             F.gather_row(part_g.ndata["h"], llocal_nodes),
@@ -490,41 +477,35 @@ def check_partition(
             assert np.all(F.asnumpy(true_feats) == F.asnumpy(edata))
 
         # This only works if node/edge IDs are shuffled.
-        if reshuffle:
-            shuffled_labels.append(node_feats["_N/labels"])
-            shuffled_edata.append(edge_feats["_N:_E:_N/feats"])
+        shuffled_labels.append(node_feats["_N/labels"])
+        shuffled_edata.append(edge_feats["_N:_E:_N/feats"])
 
     # Verify that we can reconstruct node/edge data for original IDs.
-    if reshuffle:
-        shuffled_labels = F.asnumpy(F.cat(shuffled_labels, 0))
-        shuffled_edata = F.asnumpy(F.cat(shuffled_edata, 0))
-        orig_labels = np.zeros(
-            shuffled_labels.shape, dtype=shuffled_labels.dtype
-        )
-        orig_edata = np.zeros(shuffled_edata.shape, dtype=shuffled_edata.dtype)
-        orig_labels[F.asnumpy(orig_nids)] = shuffled_labels
-        orig_edata[F.asnumpy(orig_eids)] = shuffled_edata
-        assert np.all(orig_labels == F.asnumpy(g.ndata["labels"]))
-        assert np.all(orig_edata == F.asnumpy(g.edata["feats"]))
+    shuffled_labels = F.asnumpy(F.cat(shuffled_labels, 0))
+    shuffled_edata = F.asnumpy(F.cat(shuffled_edata, 0))
+    orig_labels = np.zeros(shuffled_labels.shape, dtype=shuffled_labels.dtype)
+    orig_edata = np.zeros(shuffled_edata.shape, dtype=shuffled_edata.dtype)
+    orig_labels[F.asnumpy(orig_nids)] = shuffled_labels
+    orig_edata[F.asnumpy(orig_eids)] = shuffled_edata
+    assert np.all(orig_labels == F.asnumpy(g.ndata["labels"]))
+    assert np.all(orig_edata == F.asnumpy(g.edata["feats"]))
 
-    if reshuffle:
-        node_map = []
-        edge_map = []
-        for i, (num_nodes, num_edges) in enumerate(part_sizes):
-            node_map.append(np.ones(num_nodes) * i)
-            edge_map.append(np.ones(num_edges) * i)
-        node_map = np.concatenate(node_map)
-        edge_map = np.concatenate(edge_map)
-        nid2pid = gpb.nid2partid(F.arange(0, len(node_map)))
-        assert F.dtype(nid2pid) in (F.int32, F.int64)
-        assert np.all(F.asnumpy(nid2pid) == node_map)
-        eid2pid = gpb.eid2partid(F.arange(0, len(edge_map)))
-        assert F.dtype(eid2pid) in (F.int32, F.int64)
-        assert np.all(F.asnumpy(eid2pid) == edge_map)
+    node_map = []
+    edge_map = []
+    for i, (num_nodes, num_edges) in enumerate(part_sizes):
+        node_map.append(np.ones(num_nodes) * i)
+        edge_map.append(np.ones(num_edges) * i)
+    node_map = np.concatenate(node_map)
+    edge_map = np.concatenate(edge_map)
+    nid2pid = gpb.nid2partid(F.arange(0, len(node_map)))
+    assert F.dtype(nid2pid) in (F.int32, F.int64)
+    assert np.all(F.asnumpy(nid2pid) == node_map)
+    eid2pid = gpb.eid2partid(F.arange(0, len(edge_map)))
+    assert F.dtype(eid2pid) in (F.int32, F.int64)
+    assert np.all(F.asnumpy(eid2pid) == edge_map)
 
 
 @pytest.mark.parametrize("part_method", ["metis", "random"])
-@pytest.mark.parametrize("reshuffle", [True, False])
 @pytest.mark.parametrize("num_parts", [1, 4])
 @pytest.mark.parametrize("num_trainers_per_machine", [1, 4])
 @pytest.mark.parametrize("load_feats", [True, False])
@@ -533,7 +514,6 @@ def check_partition(
 )
 def test_partition(
     part_method,
-    reshuffle,
     num_parts,
     num_trainers_per_machine,
     load_feats,
@@ -546,7 +526,6 @@ def test_partition(
     check_partition(
         g,
         part_method,
-        reshuffle,
         num_parts,
         num_trainers_per_machine,
         load_feats,
@@ -562,30 +541,6 @@ def test_partition(
         graph_formats,
     )
     reset_envs()
-
-
-def test_BasicPartitionBook():
-    part_id = 0
-    num_parts = 2
-    node_map = np.random.choice(num_parts, 1000)
-    edge_map = np.random.choice(num_parts, 5000)
-    graph = dgl.rand_graph(1000, 5000)
-    graph = dgl.node_subgraph(graph, F.arange(0, graph.num_nodes()))
-    gpb = BasicPartitionBook(part_id, num_parts, node_map, edge_map, graph)
-    c_etype = ("_N", "_E", "_N")
-    assert gpb.etypes == ["_E"]
-    assert gpb.canonical_etypes == [c_etype]
-
-    node_policy = NodePartitionPolicy(gpb, "_N")
-    assert node_policy.type_name == "_N"
-    expect_except = False
-    try:
-        edge_policy = EdgePartitionPolicy(gpb, "_E")
-    except AssertionError:
-        expect_except = True
-    assert expect_except
-    edge_policy = EdgePartitionPolicy(gpb, c_etype)
-    assert edge_policy.type_name == c_etype
 
 
 def test_RangePartitionBook():
@@ -669,7 +624,7 @@ def test_RangePartitionBook():
     assert node_policy.policy_str == "node~node1"
     assert node_policy.part_id == part_id
     assert node_policy.is_node
-    assert node_policy.get_data_name('x').is_node()
+    assert node_policy.get_data_name("x").is_node()
     local_ids = th.arange(0, 1000)
     global_ids = local_ids + 1000
     assert th.equal(node_policy.to_local(global_ids), local_ids)
@@ -683,7 +638,7 @@ def test_RangePartitionBook():
     assert edge_policy.policy_str == "edge~node1:edge1:node2"
     assert edge_policy.part_id == part_id
     assert not edge_policy.is_node
-    assert not edge_policy.get_data_name('x').is_node()
+    assert not edge_policy.get_data_name("x").is_node()
     local_ids = th.arange(0, 5000)
     global_ids = local_ids + 5000
     assert th.equal(edge_policy.to_local(global_ids), local_ids)
@@ -699,3 +654,27 @@ def test_RangePartitionBook():
     assert expect_except
     data_name = HeteroDataName(False, c_etype, "feat")
     assert data_name.get_type() == c_etype
+
+
+def test_UnknownPartitionBook():
+    node_map = {"_N": {0: 0, 1: 1, 2: 2}}
+    edge_map = {"_N:_E:_N": {0: 0, 1: 1, 2: 2}}
+
+    part_metadata = {
+        "num_parts": 1,
+        "num_nodes": len(node_map),
+        "num_edges": len(edge_map),
+        "node_map": node_map,
+        "edge_map": edge_map,
+        "graph_name": "test_graph",
+    }
+
+    with tempfile.TemporaryDirectory() as test_dir:
+        part_config = os.path.join(test_dir, "test_graph.json")
+        with open(part_config, "w") as file:
+            json.dump(part_metadata, file, indent=4)
+        try:
+            load_partition_book(part_config, 0)
+        except Exception as e:
+            if not isinstance(e, TypeError):
+                raise e
