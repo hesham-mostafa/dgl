@@ -9,6 +9,7 @@
 #include <dgl/packed_func_ext.h>
 #include <dgl/runtime/container.h>
 #include <dgl/sampling/neighbor.h>
+#include <dgl/immutable_graph.h>
 
 #include <tuple>
 #include <utility>
@@ -270,7 +271,7 @@ HeteroSubgraph SampleNeighbors(
 
 
 HeteroSubgraph SampleNeighborsFused(
-                                    const HeteroGraphPtr hg, const std::vector<IdArray>& nodes,IdArray mapping,
+                                    const HeteroGraphPtr hg, const std::vector<IdArray>& nodes, std::vector<IdArray>& mapping,
                                     const std::vector<int64_t>& fanouts, EdgeDir dir,
                                     const std::vector<NDArray>& prob_or_mask,
                                     const std::vector<IdArray>& exclude_edges, bool replace) {
@@ -281,64 +282,110 @@ HeteroSubgraph SampleNeighborsFused(
       << "Number of fanout values must match the number of edge types.";
   CHECK_EQ(prob_or_mask.size(), hg->NumEdgeTypes())
       << "Number of probability tensors must match the number of edge types.";
-  CHECK_EQ(hg->NumEdgeTypes(),1) << "Fused sampling only supports graphs with one edge type";
-  
+
   DGLContext ctx = aten::GetContextOf(nodes);
 
-  std::vector<HeteroGraphPtr> subrels(1);
-  std::vector<IdArray> induced_edges(1);
-  IdArray induced_vertices;
+  std::vector<CSRMatrix> sampled_graphs;
+  std::vector<IdArray> induced_edges;
+  std::vector<IdArray> induced_vertices;
+  std::vector<int64_t> num_nodes_per_type;
+  std::vector<std::vector<int64_t>> new_nodes_vec(hg->NumVertexTypes());
   
-  auto pair = hg->meta_graph()->FindEdge(0);
-  const dgl_type_t src_vtype = pair.first;
-  const dgl_type_t dst_vtype = pair.second;
-  const IdArray nodes_ntype =
+
+  for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
+    auto pair = hg->meta_graph()->FindEdge(etype);
+    const dgl_type_t src_vtype = pair.first;
+    const dgl_type_t dst_vtype = pair.second;
+    const dgl_type_t rhs_node_type = (dir == EdgeDir::kOut) ? src_vtype : dst_vtype;
+    const IdArray nodes_ntype =
         nodes[(dir == EdgeDir::kOut) ? src_vtype : dst_vtype];
-  const int64_t num_nodes = nodes_ntype->shape[0];
-
-  if (num_nodes ==0 || fanouts[0] == 0) {
-    // Nothing to sample for this etype, create a placeholder relation graph
-    subrels[0] = UnitGraph::Empty(
-                                      hg->GetRelationGraph(0)->NumVertexTypes(),
-                                      hg->NumVertices(src_vtype), hg->NumVertices(dst_vtype),
-                                      hg->DataType(), ctx);
-    induced_edges[0] = aten::NullArray(hg->DataType(), ctx);
-  } else {
-    std::pair<CSRMatrix,IdArray> sampled_csr;
-    // sample from one relation graph
-    auto req_fmt = (dir == EdgeDir::kOut) ? CSR_CODE : CSC_CODE;
-    auto avail_fmt = hg->SelectFormat(0, req_fmt);
-    switch (avail_fmt) {
-    case SparseFormat::kCSR:
-      CHECK(dir == EdgeDir::kOut)
-        << "Cannot sample out edges on CSC matrix.";
-      sampled_csr = aten::CSRRowWiseSamplingFused(
-                                                  hg->GetCSRMatrix(0), nodes_ntype, mapping,fanouts[0],
-                                                  prob_or_mask[0], replace);
-      break;
-    case SparseFormat::kCSC:
-      CHECK(dir == EdgeDir::kIn) << "Cannot sample in edges on CSR matrix.";
-      sampled_csr = aten::CSRRowWiseSamplingFused(
-                                                  hg->GetCSCMatrix(0), nodes_ntype, mapping,fanouts[0],
-                                                  prob_or_mask[0], replace);
-      break;
-    default:
-      LOG(FATAL) << "Unsupported sparse format.";
-    }
-
-    subrels[0] = UnitGraph::CreateFromCSC(
-                                              2,
-                                              sampled_csr.first,ALL_CODE);
-    induced_edges[0]  =sampled_csr.first.data;
-    induced_vertices = sampled_csr.second;
+    // Seed nodes count needs to be remembered for each node type so that future
+    // sampled nodes mapping can be started at proper id (seed nodes must be mapped first)
+    new_nodes_vec[rhs_node_type].resize(nodes_ntype->shape[0]);
   }
 
+  for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
+    auto pair = hg->meta_graph()->FindEdge(etype);
+    const dgl_type_t src_vtype = pair.first;
+    const dgl_type_t dst_vtype = pair.second;
+    const IdArray nodes_ntype =
+          nodes[(dir == EdgeDir::kOut) ? src_vtype : dst_vtype];
+    const int64_t num_nodes = nodes_ntype->shape[0];
+
+    if (num_nodes ==0 || fanouts[etype] == 0) {
+      // Nothing to sample for this etype, create a placeholder relation graph
+      sampled_graphs.push_back(CSRMatrix());
+      induced_edges.push_back(aten::NullArray(hg->DataType(), ctx));
+    } else {
+      // sample from one relation graph
+      CSRMatrix sampled_csr;
+      auto req_fmt = (dir == EdgeDir::kOut) ? CSR_CODE : CSC_CODE;
+      auto avail_fmt = hg->SelectFormat(etype, req_fmt);
+      switch (avail_fmt) {
+      case SparseFormat::kCSR:
+        CHECK(dir == EdgeDir::kOut)
+          << "Cannot sample out edges on CSC matrix.";
+        // In heterographs nodes of two diffrent types can be connected
+        // therefore two diffrent mappings and node vectors are needed
+        sampled_csr = aten::CSRRowWiseSamplingFused(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
+                                                    new_nodes_vec[src_vtype], new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
+        break;
+      case SparseFormat::kCSC:
+        CHECK(dir == EdgeDir::kIn) 
+          << "Cannot sample in edges on CSR matrix.";
+        sampled_csr = aten::CSRRowWiseSamplingFused(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
+                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
+        break;
+      default:
+        LOG(FATAL) << "Unsupported sparse format.";
+      }
+      sampled_graphs.push_back(sampled_csr);
+      induced_edges.push_back(sampled_csr.data);
+    }
+  }
+
+  // counting how many nodes of each ntype were sampled
+  num_nodes_per_type.reserve(2 * hg->NumVertexTypes());
+  for (size_t i = 0; i < hg->NumVertexTypes(); i++) {
+    num_nodes_per_type[i] = new_nodes_vec[i].size();
+    num_nodes_per_type[hg->NumVertexTypes() + i] = nodes[i]->shape[0];
+    induced_vertices.push_back(VecToIdArray(new_nodes_vec[i]));
+  }
+
+  std::vector<HeteroGraphPtr> subrels(hg->NumEdgeTypes());
+  for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
+    auto pair = hg->meta_graph()->FindEdge(etype);
+    const dgl_type_t src_vtype = pair.first;
+    const dgl_type_t dst_vtype = pair.second;
+    if (sampled_graphs[etype].num_rows == 0) {
+      subrels[etype] = UnitGraph::Empty(
+                      2, new_nodes_vec[src_vtype].size(),nodes[dst_vtype]->shape[0],
+                      hg->DataType(), ctx);
+    } else {
+      CSRMatrix graph = sampled_graphs[etype];
+      if (dir == EdgeDir::kOut) {
+        CSRMatrix block_matrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indptr, graph.indices);
+        subrels[etype] = UnitGraph::CreateFromCSR(2, block_matrix, ALL_CODE);
+      }
+      else {
+        CSRMatrix block_matrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices);
+        subrels[etype] = UnitGraph::CreateFromCSC(2, block_matrix, ALL_CODE);
+      }
+    }
+  }
 
   HeteroSubgraph ret;
+
+  const auto meta_graph = hg->meta_graph();
+  const EdgeArray etypes = meta_graph->Edges("eid");
+  const IdArray new_dst = Add(etypes.dst, hg->NumVertexTypes());
+
+  const auto new_meta_graph =
+      ImmutableGraph::CreateFromCOO(hg->NumVertexTypes() * 2, etypes.src, new_dst);
+
   ret.graph =
-      CreateHeteroGraph(hg->meta_graph(), subrels, hg->NumVerticesPerType());
-  ret.induced_vertices.resize(1);
-  ret.induced_vertices[0] = induced_vertices;
+      CreateHeteroGraph(new_meta_graph, subrels, num_nodes_per_type);
+  ret.induced_vertices = std::move(induced_vertices);
   ret.induced_edges = std::move(induced_edges);
   if (!exclude_edges.empty()) {
     return ExcludeCertainEdges(ret, exclude_edges).first;
@@ -731,7 +778,7 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighborsFused")
     .set_body([](DGLArgs args, DGLRetValue* rv) {
       HeteroGraphRef hg = args[0];
       const auto& nodes = ListValueToVector<IdArray>(args[1]);
-      IdArray mapping = args[2];
+      auto mapping = ListValueToVector<IdArray>(args[2]);
       IdArray fanouts_array = args[3];
       const auto& fanouts = fanouts_array.ToVector<int64_t>();
       const std::string dir_str = args[4];
@@ -745,9 +792,28 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighborsFused")
 
       std::shared_ptr<HeteroSubgraph> subg(new HeteroSubgraph);
       *subg = sampling::SampleNeighborsFused(
-                                             hg.sptr(), nodes, mapping,fanouts, dir, prob_or_mask, exclude_edges, replace);
+        hg.sptr(), nodes, mapping, fanouts, dir, prob_or_mask, exclude_edges, replace);
+      // Basing on HeteroSubgraph create bipartite HeteroGraphPtr
+      std::vector<HeteroGraphPtr> subrels(hg->NumEdgeTypes());
+      for (size_t i = 0; i < hg->NumEdgeTypes(); i++) {
+        subrels[i] = subg->graph->GetRelationGraph(i);
+      }
 
-      *rv = HeteroSubgraphRef(subg);
+      List<Value> lhs_nodes_ref;
+      for (IdArray &array : subg->induced_vertices)
+        lhs_nodes_ref.push_back(Value(MakeValue(array)));
+      List<Value> induced_edges_ref;
+      for (IdArray &array : subg->induced_edges)
+        induced_edges_ref.push_back(Value(MakeValue(array)));
+      
+      const HeteroGraphPtr new_graph =
+        CreateHeteroGraph(subg->graph->meta_graph(), subrels, subg->graph->NumVerticesPerType());
+      List<ObjectRef> ret;
+      ret.push_back(HeteroGraphRef(new_graph));
+      ret.push_back(lhs_nodes_ref);
+      ret.push_back(induced_edges_ref);
+
+      *rv = ret;
     });
 
 

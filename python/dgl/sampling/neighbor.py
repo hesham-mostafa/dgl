@@ -367,10 +367,6 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                       replace=False, copy_ndata=True, copy_edata=True,
                       _dist_training=False, exclude_edges=None, fused=False, fused_backward=False):
 
-    if fused and len(g.ntypes) > 1:
-        raise DGLError(
-            "Fused sampling only supported for homogeneous graphs.")
-
     if not isinstance(nodes, dict):
         if len(g.ntypes) > 1:
             raise DGLError(
@@ -430,36 +426,24 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
         if mapping_name not in g.ndata:
             g.ndata[mapping_name] = torch.LongTensor(
                 g.number_of_nodes()).fill_(-1)
-        mapping = g.ndata[mapping_name]
-        if fused_backward:
-            subgidx = _CAPI_DGLSampleNeighborsFusedBackward(
-                g._graph, nodes_all_types, F.to_dgl_nd(
-                    mapping), fanout_array, edge_dir, prob_arrays,
-                excluded_edges_all_t, replace)
-        else:
-            subgidx = _CAPI_DGLSampleNeighborsFused(
-                g._graph, nodes_all_types, F.to_dgl_nd(
-                    mapping), fanout_array, edge_dir, prob_arrays,
-                excluded_edges_all_t, replace)
+        
+        mapping = [F.to_dgl_nd(torch.LongTensor(
+                g.number_of_nodes(ntype)).fill_(-1)) for ntype in g.ntypes]
+        subgidx, induced_nodes, induced_edges = _CAPI_DGLSampleNeighborsFused(
+            g._graph, nodes_all_types, 
+                mapping, fanout_array, edge_dir, prob_arrays,
+            excluded_edges_all_t, replace)
 
-        induced_nodes = subgidx.induced_nodes[0]
-        mapping[induced_nodes] = -1
-        seed_nodes = list(nodes.values())[0]
-        metagraph = graph_index.from_coo(2, [0], [1], True)
-        index = utils.Index([len(induced_nodes), len(seed_nodes)])
-        hgidx = heterograph_index.create_heterograph_from_relations(
-            metagraph, [subgidx.graph], index)
-        ret = DGLBlock(hgidx, ['_N', '_N'], ['_E'])
-        ret.srcdata[NID] = induced_nodes
-        ret.edata[EID] = subgidx.induced_edges[0]
+        new_ntypes = (g.ntypes, g.ntypes)
+        ret = DGLBlock(subgidx, new_ntypes, g.etypes)
+        assert ret.is_unibipartite
 
     else:
         subgidx = _CAPI_DGLSampleNeighbors(
             g._graph, nodes_all_types, fanout_array, edge_dir, prob_arrays,
             excluded_edges_all_t, replace)
         ret = DGLGraph(subgidx.graph, g.ntypes, g.etypes)
-
-    induced_edges = subgidx.induced_edges
+        induced_edges = subgidx.induced_edges
 
     # handle features
     # (TODO) (BarclayII) DGL distributed fails with bus error, freezes, or other
@@ -468,12 +452,27 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
     # only set the edge IDs.
     if not _dist_training:
         if copy_ndata:
-            node_frames = utils.extract_node_subframes(g, device)
-            utils.set_new_frames(ret, node_frames=node_frames)
+            if fused:
+                src_node_ids = [F.from_dgl_nd(src) for src in induced_nodes]
+                dst_node_ids = [utils.toindex(nodes.get(ntype, []),
+                                g._idtype_str).tousertensor(
+                                ctx=F.to_backend_ctx(g._graph.ctx))
+                                for ntype in g.ntypes]
+                node_frames = utils.extract_node_subframes_for_block(g, src_node_ids, dst_node_ids) 
+                utils.set_new_frames(ret, node_frames=node_frames)
+            else:
+                node_frames = utils.extract_node_subframes(g, device)
+                utils.set_new_frames(ret, node_frames=node_frames)
 
         if copy_edata:
-            edge_frames = utils.extract_edge_subframes(g, induced_edges)
-            utils.set_new_frames(ret, edge_frames=edge_frames)
+            if fused:
+                edge_ids = [F.from_dgl_nd(eid) for eid in induced_edges]
+                edge_frames = utils.extract_edge_subframes(g, edge_ids)
+                utils.set_new_frames(ret, edge_frames=edge_frames)
+            else: 
+                edge_frames = utils.extract_edge_subframes(g, induced_edges)
+                utils.set_new_frames(ret, edge_frames=edge_frames)
+
     else:
         for i, etype in enumerate(ret.canonical_etypes):
             ret.edges[etype].data[EID] = induced_edges[i]

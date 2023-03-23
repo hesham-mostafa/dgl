@@ -862,9 +862,9 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedParallel(
 // independently.
 //three steps
 template <typename IdxType>
-std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
-                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
-                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst,
+                              std::vector<int64_t>& new_nodes_src, std::vector<int64_t>& new_nodes_dst, int64_t num_picks, 
+                              bool replace, PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
   using namespace aten;
   //  uint64_t startTick, endTick;
   //  startTick = __rdtsc();
@@ -873,13 +873,14 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
   const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
   const IdxType* data =
       CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
-  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t* rows_data = static_cast<int64_t*>(rows->data);
   const int64_t num_rows = rows->shape[0];
   const auto& ctx = mat.indptr->ctx;
   const auto& idtype = mat.indptr->dtype;
 
 
-  IdxType* mapping_data = mapping.Ptr<IdxType>();
+  IdxType* mapping_data_dst = mapping_dst.Ptr<IdxType>();
+  IdxType* mapping_data_src = mapping_src.Ptr<IdxType>();
   //  std::ofstream d_file;
   //  d_file.open("/home/hesham/fused_debug");
 
@@ -938,8 +939,8 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
       // build prefix-sum
       const int64_t local_i = i - start_i;
       const IdxType rid = rows_data[i];
-      mapping_data[rid] = i;
-     
+      mapping_data_src[rid] = i;
+
       IdxType len = num_picks_fn(
           rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
       local_prefix[local_i + 1] = local_prefix[local_i] + len;
@@ -1017,10 +1018,10 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
     
     for (int64_t i = start_i; i < end_i; ++i) {
       IdxType picked_idx = cdata[i];
-      bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data[picked_idx], -1,
+      bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
 							    0);      
       if(spot_claimed)
-	  src_nodes_local[thread_id].push_back(picked_idx);
+	      src_nodes_local[thread_id].push_back(picked_idx);
 
     }
     global_prefix_col[thread_id + 1] = src_nodes_local[thread_id].size();
@@ -1028,7 +1029,7 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
 #pragma omp barrier
 #pragma omp master
     {
-      global_prefix_col[0] = num_rows;
+      global_prefix_col[0] = new_nodes_dst.size();        //CHANGE
       for (int t = 0; t < num_threads_col; ++t) {
         global_prefix_col[t + 1] += global_prefix_col[t];
       }
@@ -1038,30 +1039,26 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
 #pragma omp barrier
     int64_t mapping_shift = global_prefix_col[thread_id];
     for (int i = 0; i < src_nodes_local[thread_id].size(); ++i) 
-      mapping_data[src_nodes_local[thread_id][i]] = mapping_shift + i;
+      mapping_data_dst[src_nodes_local[thread_id][i]] = mapping_shift + i;
     
 #pragma omp barrier
     for (int64_t i = start_i; i < end_i; ++i) {
       IdxType picked_idx = cdata[i];
-      IdxType mapped_idx = mapping_data[picked_idx];
+      IdxType mapped_idx = mapping_data_dst[picked_idx];
       if(mapped_idx < 0)
-	LOG(FATAL) << "invalid mapped idx ";
-	
+	      LOG(FATAL) << "invalid mapped idx ";
       cdata[i] = mapped_idx;
       
     }
   }
 
 
-  IdArray src_nodes = IdArray::Empty({global_prefix_col.back()}, idtype, ctx);
-  //  LOG(INFO) << "sz src_nodes "<<src_nodes->shape[0];
-
-  IdxType * src_nodes_data = src_nodes.Ptr<IdxType>();
-  memcpy(src_nodes_data,rows_data,sizeof(IdxType) * num_rows);
-  int64_t offset = num_rows;
-  for(int thread_id = 0;thread_id < num_threads_col; ++thread_id)
+  memcpy(new_nodes_src.data(), rows_data, sizeof(int64_t)*num_rows);
+  int64_t offset = new_nodes_dst.size();
+  new_nodes_dst.resize(global_prefix_col.back());
+  for(int thread_id = 0; thread_id < num_threads_col; ++thread_id)
     {
-      memcpy(src_nodes_data + offset,
+      memcpy(new_nodes_dst.data() + offset,
 	     &src_nodes_local[thread_id][0],
 	     src_nodes_local[thread_id].size() * sizeof(IdxType));
       offset += src_nodes_local[thread_id].size();
@@ -1070,9 +1067,8 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(
   
   //  LOG(INFO) << "fused pick three step = " << (endTick - startTick);
 
-  return std::make_pair(CSRMatrix(
-      num_rows, src_nodes->shape[0],
-      block_csr_indptr,picked_col,picked_idx), src_nodes);
+  return CSRMatrix(num_rows, new_nodes_dst.size(),
+      block_csr_indptr,picked_col,picked_idx);
 }
 
   

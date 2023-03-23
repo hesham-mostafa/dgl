@@ -227,8 +227,9 @@ template COOMatrix CSRRowWiseSampling<kDGLCPU, int64_t, uint8_t>(
 
 
 template <DGLDeviceType XPU, typename IdxType, typename DType>
-std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused(
-                                  CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_samples, NDArray prob_or_mask,
+CSRMatrix CSRRowWiseSamplingFused(
+                                  CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
+                                  std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, NDArray prob_or_mask,
     bool replace) {
   // If num_samples is -1, select all neighbors without replacement.
   replace = (replace && num_samples != -1);
@@ -237,25 +238,25 @@ std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused(
       GetSamplingNumPicksFn<IdxType, DType>(num_samples, prob_or_mask, replace);
   auto pick_fn =
       GetSamplingPickFn<IdxType, DType>(num_samples, prob_or_mask, replace);
-  return CSRRowWisePickFused(mat, rows, mapping,num_samples, replace, pick_fn, num_picks_fn);
+  return CSRRowWisePickFused(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
 }
 
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, float>(
-    CSRMatrix, IdArray,IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, float>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, double>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, double>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t>(
-    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, float>(
+    CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, float>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, double>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, double>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
 
 
 template <DGLDeviceType XPU, typename IdxType, typename DType>
@@ -352,20 +353,22 @@ template COOMatrix CSRRowWiseSamplingUniform<kDGLCPU, int64_t>(
 
 
 template <DGLDeviceType XPU, typename IdxType>
-std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused(
-                                                            CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_samples, bool replace) {
+CSRMatrix CSRRowWiseSamplingUniformFused(
+                                                            CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
+                                  std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, bool replace) {
   // If num_samples is -1, select all neighbors without replacement.
   replace = (replace && num_samples != -1);
   auto num_picks_fn =
       GetSamplingUniformNumPicksFn<IdxType>(num_samples, replace);
   auto pick_fn = GetSamplingUniformPickFn<IdxType>(num_samples, replace);
-  return CSRRowWisePickFused(mat, rows, mapping,num_samples, replace, pick_fn, num_picks_fn);
+  return CSRRowWisePickFused(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
 }
 
-template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t>(
-                                                                                       CSRMatrix, IdArray,IdArray, int64_t, bool);
-template std::pair<CSRMatrix,IdArray>  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t>(
-                                                                                        CSRMatrix, IdArray, IdArray,int64_t, bool);
+template CSRMatrix CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t>(
+                                                                                       CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+template CSRMatrix  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t>(
+                                                                                        CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+
 
 
 template <DGLDeviceType XPU, typename IdxType>
