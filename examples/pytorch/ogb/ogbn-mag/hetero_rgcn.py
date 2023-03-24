@@ -17,7 +17,7 @@ from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
 from tqdm import tqdm
 
 v_t = dgl.__version__
-fused = False
+fused = True
 
 def prepare_data(args, device):
     dataset = DglNodePropPredDataset(name="ogbn-mag")
@@ -258,7 +258,7 @@ def train(
     category = "paper"
     total_sampling_time = 0
     total_forward_backward_time = 0
-    for epoch in range(3):
+    for epoch in range(2):
         num_train = split_idx["train"][category].shape[0]
         pbar = tqdm(total=num_train)
         pbar.set_description(f"Epoch {epoch:02d}")
@@ -290,16 +290,15 @@ def train(
             y_hat = logits.log_softmax(dim=-1)
             loss = F.nll_loss(y_hat, lbl)
             loss.backward()
-            optimizer.step()
             forward_backward_end_time = time.time()
+            optimizer.step()
 
             total_loss += loss.item() * batch_size
             pbar.update(batch_size)
-            if True:#epoch > 0:  # ignore times in first epoch due to pytorch warmup
-                total_sampling_time += (sample_end_time -
-                                        sample_start_time)
-                total_forward_backward_time += (forward_backward_end_time -
-                                                forward_backward_start_time)
+            total_sampling_time += (sample_end_time -
+                                    sample_start_time)
+            total_forward_backward_time += (forward_backward_end_time -
+                                            forward_backward_start_time)
             sample_start_time = time.time()
         print("total_sampling_time: ", total_sampling_time)
         print("total_forward_backward_time: ", total_forward_backward_time)
@@ -475,7 +474,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RGCN")
-    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--num_workers", type=int, default=0)
 
     args = parser.parse_args()
