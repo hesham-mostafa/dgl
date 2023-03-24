@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torchmetrics.functional as MF
 import tqdm
 from dgl import apply_each
-from dgl.dataloading import DataLoader, NeighborSampler
+from dgl.dataloading import DataLoader, NeighborSampler, NeighborSamplerFused
 from ogb.nodeproppred import DglNodePropPredDataset
 
 
@@ -142,12 +142,14 @@ if __name__ == "__main__":
     model = HeteroGAT(graph.etypes, in_size, 256, out_size).to(device)
 
     # dataloader + model training + testing
-    train_sampler = NeighborSampler(
+    #train_sampler = NeighborSampler(
+    train_sampler = NeighborSamplerFused(
         [5, 5, 5],
         prefetch_node_feats={k: ["feat"] for k in graph.ntypes},
         prefetch_labels={"paper": ["label"]},
     )
-    val_sampler = NeighborSampler(
+    #val_sampler = NeighborSampler(
+    val_sampler = NeighborSamplerFused(
         [10, 10, 10],
         prefetch_node_feats={k: ["feat"] for k in graph.ntypes},
         prefetch_labels={"paper": ["label"]},

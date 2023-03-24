@@ -4,6 +4,7 @@ import sys
 
 import dgl
 import dgl.nn as dglnn
+import time
 
 import psutil
 
@@ -16,7 +17,7 @@ from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
 from tqdm import tqdm
 
 v_t = dgl.__version__
-
+fused = False
 
 def prepare_data(args, device):
     dataset = DglNodePropPredDataset(name="ogbn-mag")
@@ -33,7 +34,10 @@ def prepare_data(args, device):
     logger = Logger(args.runs)
 
     # train sampler
-    sampler = dgl.dataloading.MultiLayerNeighborSampler([25, 20])
+    if fused:
+        sampler = dgl.dataloading.NeighborSamplerFused([25, 20])
+    else:
+        sampler = dgl.dataloading.MultiLayerNeighborSampler([25, 20])
     num_workers = args.num_workers
     train_loader = dgl.dataloading.DataLoader(
         g,
@@ -252,7 +256,8 @@ def train(
 ):
     print("start training...")
     category = "paper"
-
+    total_sampling_time = 0
+    total_forward_backward_time = 0
     for epoch in range(3):
         num_train = split_idx["train"][category].shape[0]
         pbar = tqdm(total=num_train)
@@ -260,7 +265,7 @@ def train(
         model.train()
 
         total_loss = 0
-
+        sample_start_time = time.time()
         for input_nodes, seeds, blocks in train_loader:
             blocks = [blk.to(device) for blk in blocks]
             seeds = seeds[
@@ -269,6 +274,7 @@ def train(
             batch_size = seeds.shape[0]
             input_nodes_indexes = input_nodes["paper"].to(g.device)
             seeds = seeds.to(labels.device)
+            sample_end_time = time.time()
 
             emb = extract_embed(node_embed, input_nodes)
             # Add the batch's raw "paper" features
@@ -278,16 +284,25 @@ def train(
             lbl = labels[seeds].to(device)
 
             optimizer.zero_grad()
+            forward_backward_start_time = time.time()
             logits = model(emb, blocks)[category]
 
             y_hat = logits.log_softmax(dim=-1)
             loss = F.nll_loss(y_hat, lbl)
             loss.backward()
             optimizer.step()
+            forward_backward_end_time = time.time()
 
             total_loss += loss.item() * batch_size
             pbar.update(batch_size)
-
+            if True:#epoch > 0:  # ignore times in first epoch due to pytorch warmup
+                total_sampling_time += (sample_end_time -
+                                        sample_start_time)
+                total_forward_backward_time += (forward_backward_end_time -
+                                                forward_backward_start_time)
+            sample_start_time = time.time()
+        print("total_sampling_time: ", total_sampling_time)
+        print("total_forward_backward_time: ", total_forward_backward_time)
         pbar.close()
         loss = total_loss / num_train
 
@@ -313,7 +328,11 @@ def test(g, model, node_embed, y_true, device, split_idx):
     evaluator = Evaluator(name="ogbn-mag")
 
     # 2 GNN layers
-    sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
+    if fused:
+        sampler = dgl.dataloading.MultiLayerFullNeighborSamplerFused(2)
+    else:
+        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
+
     loader = dgl.dataloading.DataLoader(
         g,
         {"paper": th.arange(g.num_nodes("paper"))},

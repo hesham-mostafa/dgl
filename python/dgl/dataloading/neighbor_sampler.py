@@ -35,6 +35,42 @@ class NeighborSamplerFused(BlockSampler):
             blocks.insert(0, block)
 
         return seed_nodes, output_nodes, blocks
+    
+class MultiLayerFullNeighborSamplerFused(NeighborSamplerFused):
+    """Sampler that builds computational dependency of node representations by taking messages
+    from all neighbors for multilayer GNN.
+
+    This sampler will make every node gather messages from every single neighbor per edge type.
+
+    Parameters
+    ----------
+    n_layers : int
+        The number of GNN layers to sample.
+    kwargs :
+        Passed to :class:`dgl.dataloading.NeighborSampler`.
+
+    Examples
+    --------
+    To train a 3-layer GNN for node classification on a set of nodes ``train_nid`` on
+    a homogeneous graph where each node takes messages from all neighbors for the first,
+    second, and third layer respectively (assuming the backend is PyTorch):
+
+    >>> sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
+    >>> dataloader = dgl.dataloading.DataLoader(
+    ...     g, train_nid, sampler,
+    ...     batch_size=1024, shuffle=True, drop_last=False, num_workers=4)
+    >>> for input_nodes, output_nodes, blocks in dataloader:
+    ...     train_on(blocks)
+
+    Notes
+    -----
+    For the concept of MFGs, please refer to
+    :ref:`User Guide Section 6 <guide-minibatch>` and
+    :doc:`Minibatch Training Tutorials <tutorials/large/L0_neighbor_sampling_overview>`.
+    """
+
+    def __init__(self, num_layers, **kwargs):
+        super().__init__([-1] * num_layers, **kwargs)
 
 
 class NeighborSampler(BlockSampler):
