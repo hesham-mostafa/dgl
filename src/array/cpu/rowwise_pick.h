@@ -861,7 +861,7 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedParallel(
 // OpenMP parallelization on rows because each row performs computation
 // independently.
 //three steps
-template <typename IdxType>
+template <typename IdxType, bool map_seed_nodes>
 CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst,
                               std::vector<int64_t>& new_nodes_src, std::vector<int64_t>& new_nodes_dst, int64_t num_picks, 
                               bool replace, PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
@@ -939,7 +939,8 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, 
       // build prefix-sum
       const int64_t local_i = i - start_i;
       const IdxType rid = rows_data[i];
-      mapping_data_src[rid] = i;
+      if constexpr (map_seed_nodes)
+        mapping_data_src[rid] = i;
 
       IdxType len = num_picks_fn(
           rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
@@ -997,77 +998,15 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, 
   //  LOG(INFO) << "fused pick three step intermediate = " << (endTick - startTick);
   
   const int64_t num_cols = picked_col->shape[0];
- 
-  // Do not use omp_get_max_threads() since that doesn't work for compiling
-  // without OpenMP.
-  const int num_threads_col = runtime::compute_num_threads(0, num_cols, 1);
-  std::vector<int64_t> global_prefix_col(num_threads_col + 1, 0);
-  std::vector<std::vector<IdxType> > src_nodes_local(num_threads_col);
-  
-#pragma omp parallel num_threads(num_threads_col)
-  {
-    const int thread_id = omp_get_thread_num();
+  new_nodes_src.resize(num_rows);
+  if constexpr (map_seed_nodes)
+    memcpy(new_nodes_src.data(), rows_data, sizeof(int64_t)*num_rows);
 
-    const int64_t start_i =
-        thread_id * (num_cols / num_threads_col) +
-        std::min(static_cast<int64_t>(thread_id), num_cols % num_threads_col);
-    const int64_t end_i =
-        (thread_id + 1) * (num_cols / num_threads_col) +
-        std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads_col);
-    assert(thread_id + 1 < num_threads_col || end_i == num_cols);
-    
-    for (int64_t i = start_i; i < end_i; ++i) {
-      IdxType picked_idx = cdata[i];
-      bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
-							    0);      
-      if(spot_claimed)
-	      src_nodes_local[thread_id].push_back(picked_idx);
-
-    }
-    global_prefix_col[thread_id + 1] = src_nodes_local[thread_id].size();
-    
-#pragma omp barrier
-#pragma omp master
-    {
-      global_prefix_col[0] = new_nodes_dst.size();        //CHANGE
-      for (int t = 0; t < num_threads_col; ++t) {
-        global_prefix_col[t + 1] += global_prefix_col[t];
-      }
-
-    }
-
-#pragma omp barrier
-    int64_t mapping_shift = global_prefix_col[thread_id];
-    for (int i = 0; i < src_nodes_local[thread_id].size(); ++i) 
-      mapping_data_dst[src_nodes_local[thread_id][i]] = mapping_shift + i;
-    
-#pragma omp barrier
-    for (int64_t i = start_i; i < end_i; ++i) {
-      IdxType picked_idx = cdata[i];
-      IdxType mapped_idx = mapping_data_dst[picked_idx];
-      if(mapped_idx < 0)
-	      LOG(FATAL) << "invalid mapped idx ";
-      cdata[i] = mapped_idx;
-      
-    }
-  }
-
-
-  memcpy(new_nodes_src.data(), rows_data, sizeof(int64_t)*num_rows);
-  int64_t offset = new_nodes_dst.size();
-  new_nodes_dst.resize(global_prefix_col.back());
-  for(int thread_id = 0; thread_id < num_threads_col; ++thread_id)
-    {
-      memcpy(new_nodes_dst.data() + offset,
-	     &src_nodes_local[thread_id][0],
-	     src_nodes_local[thread_id].size() * sizeof(IdxType));
-      offset += src_nodes_local[thread_id].size();
-    }
   //  endTick = __rdtsc();
   
   //  LOG(INFO) << "fused pick three step = " << (endTick - startTick);
 
-  return CSRMatrix(num_rows, new_nodes_dst.size(),
+  return CSRMatrix(num_rows, num_cols,
       block_csr_indptr,picked_col,picked_idx);
 }
 

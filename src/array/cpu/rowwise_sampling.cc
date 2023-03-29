@@ -226,7 +226,7 @@ template COOMatrix CSRRowWiseSampling<kDGLCPU, int64_t, uint8_t>(
     CSRMatrix, IdArray, int64_t, NDArray, bool);
 
 
-template <DGLDeviceType XPU, typename IdxType, typename DType>
+template <DGLDeviceType XPU, typename IdxType, typename DType, bool map_seed_nodes>
 CSRMatrix CSRRowWiseSamplingFused(
                                   CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
                                   std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, NDArray prob_or_mask,
@@ -238,24 +238,41 @@ CSRMatrix CSRRowWiseSamplingFused(
       GetSamplingNumPicksFn<IdxType, DType>(num_samples, prob_or_mask, replace);
   auto pick_fn =
       GetSamplingPickFn<IdxType, DType>(num_samples, prob_or_mask, replace);
-  return CSRRowWisePickFused(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
+  return CSRRowWisePickFused<IdxType, map_seed_nodes>(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
 }
 
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, float>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, true>(
     CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, float>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, double>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, double>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, true>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
-template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t>(
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, true>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, false>(
+    CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, false>(
+    CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
+template CSRMatrix CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, false>(
     CSRMatrix,IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, NDArray, bool);
 
 
@@ -352,7 +369,7 @@ template COOMatrix CSRRowWiseSamplingUniform<kDGLCPU, int64_t>(
 
 
 
-template <DGLDeviceType XPU, typename IdxType>
+template <DGLDeviceType XPU, typename IdxType, bool map_seed_nodes>
 CSRMatrix CSRRowWiseSamplingUniformFused(
                                                             CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
                                   std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, bool replace) {
@@ -361,13 +378,13 @@ CSRMatrix CSRRowWiseSamplingUniformFused(
   auto num_picks_fn =
       GetSamplingUniformNumPicksFn<IdxType>(num_samples, replace);
   auto pick_fn = GetSamplingUniformPickFn<IdxType>(num_samples, replace);
-  return CSRRowWisePickFused(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
+  return CSRRowWisePickFused<IdxType, map_seed_nodes>(mat, rows, mapping_src, mapping_dst, src_nodes, dst_nodes, num_samples, replace, pick_fn, num_picks_fn);
 }
 
-template CSRMatrix CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t>(
-                                                                                       CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
-template CSRMatrix  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t>(
-                                                                                        CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+template CSRMatrix CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, true>(CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+template CSRMatrix  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, true>(CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+template CSRMatrix CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, false>(CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
+template CSRMatrix  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, false>(CSRMatrix, IdArray, IdArray, IdArray, std::vector<int64_t>&, std::vector<int64_t>&, int64_t, bool);
 
 
 

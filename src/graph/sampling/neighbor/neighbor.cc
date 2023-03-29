@@ -10,6 +10,7 @@
 #include <dgl/runtime/container.h>
 #include <dgl/sampling/neighbor.h>
 #include <dgl/immutable_graph.h>
+#include <dgl/runtime/parallel_for.h>
 
 #include <tuple>
 #include <utility>
@@ -290,26 +291,16 @@ HeteroSubgraph SampleNeighborsFused(
   std::vector<IdArray> induced_vertices;
   std::vector<int64_t> num_nodes_per_type;
   std::vector<std::vector<int64_t>> new_nodes_vec(hg->NumVertexTypes());
+  std::vector<int> seed_nodes_mapped(hg->NumVertexTypes(), 0);
   
+
 
   for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
     auto pair = hg->meta_graph()->FindEdge(etype);
     const dgl_type_t src_vtype = pair.first;
     const dgl_type_t dst_vtype = pair.second;
     const dgl_type_t rhs_node_type = (dir == EdgeDir::kOut) ? src_vtype : dst_vtype;
-    const IdArray nodes_ntype =
-        nodes[(dir == EdgeDir::kOut) ? src_vtype : dst_vtype];
-    // Seed nodes count needs to be remembered for each node type so that future
-    // sampled nodes mapping can be started at proper id (seed nodes must be mapped first)
-    new_nodes_vec[rhs_node_type].resize(nodes_ntype->shape[0]);
-  }
-
-  for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
-    auto pair = hg->meta_graph()->FindEdge(etype);
-    const dgl_type_t src_vtype = pair.first;
-    const dgl_type_t dst_vtype = pair.second;
-    const IdArray nodes_ntype =
-          nodes[(dir == EdgeDir::kOut) ? src_vtype : dst_vtype];
+    const IdArray nodes_ntype = nodes[rhs_node_type];
     const int64_t num_nodes = nodes_ntype->shape[0];
 
     if (num_nodes ==0 || fanouts[etype] == 0) {
@@ -317,6 +308,7 @@ HeteroSubgraph SampleNeighborsFused(
       sampled_graphs.push_back(CSRMatrix());
       induced_edges.push_back(aten::NullArray(hg->DataType(), ctx));
     } else {
+      bool map_seed_nodes = !seed_nodes_mapped[rhs_node_type];
       // sample from one relation graph
       CSRMatrix sampled_csr;
       auto req_fmt = (dir == EdgeDir::kOut) ? CSR_CODE : CSC_CODE;
@@ -327,21 +319,103 @@ HeteroSubgraph SampleNeighborsFused(
           << "Cannot sample out edges on CSC matrix.";
         // In heterographs nodes of two diffrent types can be connected
         // therefore two diffrent mappings and node vectors are needed
-        sampled_csr = aten::CSRRowWiseSamplingFused(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
+        if (map_seed_nodes)
+          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
+                                                    new_nodes_vec[src_vtype], new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
+        else
+          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
                                                     new_nodes_vec[src_vtype], new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       case SparseFormat::kCSC:
         CHECK(dir == EdgeDir::kIn) 
           << "Cannot sample in edges on CSR matrix.";
-        sampled_csr = aten::CSRRowWiseSamplingFused(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
+        if (map_seed_nodes)
+          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
+                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
+        else
+          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
                                                     new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       default:
         LOG(FATAL) << "Unsupported sparse format.";
       }
+      seed_nodes_mapped[rhs_node_type]++;
       sampled_graphs.push_back(sampled_csr);
       induced_edges.push_back(sampled_csr.data);
     }
+  }
+
+  // map indices
+  // refactoring needed, probably move to another function
+  for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
+    auto pair = hg->meta_graph()->FindEdge(etype);
+    const dgl_type_t src_vtype = pair.first;
+    const dgl_type_t dst_vtype = pair.second;
+    const dgl_type_t lhs_node_type = (dir == EdgeDir::kIn) ? src_vtype : dst_vtype;
+    if (sampled_graphs[etype].num_rows != 0) {
+      auto num_cols = sampled_graphs[etype].num_cols;
+      const int num_threads_col = runtime::compute_num_threads(0, num_cols, 1);
+      std::vector<int64_t> global_prefix_col(num_threads_col + 1, 0);
+      std::vector<std::vector<int64_t> > src_nodes_local(num_threads_col);
+      int64_t* mapping_data_dst = mapping[lhs_node_type].Ptr<int64_t>();
+      int64_t* cdata = sampled_graphs[etype].indices.Ptr<int64_t>();
+      
+#pragma omp parallel num_threads(num_threads_col)
+      {
+        const int thread_id = omp_get_thread_num();
+
+        const int64_t start_i =
+            thread_id * (num_cols / num_threads_col) +
+            std::min(static_cast<int64_t>(thread_id), num_cols % num_threads_col);
+        const int64_t end_i =
+            (thread_id + 1) * (num_cols / num_threads_col) +
+            std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads_col);
+        assert(thread_id + 1 < num_threads_col || end_i == num_cols);
+        
+        for (int64_t i = start_i; i < end_i; ++i) {
+          int64_t picked_idx = cdata[i];
+          bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
+                      0);      
+          if(spot_claimed)
+            src_nodes_local[thread_id].push_back(picked_idx);
+
+        }
+        global_prefix_col[thread_id + 1] = src_nodes_local[thread_id].size();
+        
+#pragma omp barrier
+#pragma omp master
+        {
+          global_prefix_col[0] = new_nodes_vec[lhs_node_type].size();        //CHANGE
+          for (int t = 0; t < num_threads_col; ++t) {
+            global_prefix_col[t + 1] += global_prefix_col[t];
+          }
+
+        }
+
+#pragma omp barrier
+        int64_t mapping_shift = global_prefix_col[thread_id];
+        for (int i = 0; i < src_nodes_local[thread_id].size(); ++i) 
+          mapping_data_dst[src_nodes_local[thread_id][i]] = mapping_shift + i;
+        
+#pragma omp barrier
+        for (int64_t i = start_i; i < end_i; ++i) {
+          int64_t picked_idx = cdata[i];
+          int64_t mapped_idx = mapping_data_dst[picked_idx];
+          if(mapped_idx < 0)
+            LOG(FATAL) << "invalid mapped idx ";
+          cdata[i] = mapped_idx;
+        }
+      }
+        int64_t offset = new_nodes_vec[lhs_node_type].size();
+      new_nodes_vec[lhs_node_type].resize(global_prefix_col.back());
+      for(int thread_id = 0; thread_id < num_threads_col; ++thread_id)
+        {
+          memcpy(new_nodes_vec[lhs_node_type].data() + offset,
+          &src_nodes_local[thread_id][0],
+          src_nodes_local[thread_id].size() * sizeof(int64_t));
+          offset += src_nodes_local[thread_id].size();
+        }
+        }
   }
 
   // counting how many nodes of each ntype were sampled
