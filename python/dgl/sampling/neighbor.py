@@ -422,17 +422,26 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
     if fused:
-        mapping_name = '__mapping' + str(os.getpid())
-        if mapping_name not in g.ndata:
-            g.ndata[mapping_name] = torch.LongTensor(
-                g.number_of_nodes()).fill_(-1)
-        
-        mapping = [F.to_dgl_nd(torch.LongTensor(
-                g.number_of_nodes(ntype)).fill_(-1)) for ntype in g.ntypes]
+        if len(g.ntypes) != 1:
+            mappings = [torch.LongTensor(g.number_of_nodes(ntype)).fill_(-1) 
+                        for ntype in g.ntypes]
+            mapping_name = '__mapping' + str(os.getpid())
+            g.ndata[mapping_name] = {ntype: mappings[i] 
+                                     for i, ntype in enumerate(g.ntypes)}
+            mapping = [g.ndata['__mapping' + str(os.getpid())][ntype]
+                       for ntype in g.ntypes]
+        else:
+            mapping_name = '__mapping' + str(os.getpid())
+            g.ndata[mapping_name] = torch.LongTensor(g.number_of_nodes()).fill_(-1)
+            mapping = [g.ndata[mapping_name]]
+
         subgidx, induced_nodes, induced_edges = _CAPI_DGLSampleNeighborsFused(
-            g._graph, nodes_all_types, 
-                mapping, fanout_array, edge_dir, prob_arrays,
+            g._graph, nodes_all_types,
+            [F.to_dgl_nd(m) for m in mapping],
+            fanout_array, edge_dir, prob_arrays,
             excluded_edges_all_t, replace)
+        # for mapping_vector, src_nodes in zip(mapping, induced_nodes):
+        #     mapping_vector[F.from_dgl_nd(src_nodes)] = -1
 
         new_ntypes = (g.ntypes, g.ntypes)
         ret = DGLBlock(subgidx, new_ntypes, g.etypes)
