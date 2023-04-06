@@ -292,7 +292,7 @@ HeteroSubgraph SampleNeighborsFused(
   std::vector<int64_t> num_nodes_per_type;
   std::vector<std::vector<int64_t>> new_nodes_vec(hg->NumVertexTypes());
   std::vector<int> seed_nodes_mapped(hg->NumVertexTypes(), 0);
-  
+
 
 
   for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
@@ -320,21 +320,21 @@ HeteroSubgraph SampleNeighborsFused(
         // In heterographs nodes of two diffrent types can be connected
         // therefore two diffrent mappings and node vectors are needed
         if (map_seed_nodes)
-          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
-                                                    new_nodes_vec[src_vtype], new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
+          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
+                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
         else
-          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],  mapping[dst_vtype],
-                                                    new_nodes_vec[src_vtype], new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
+          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
+                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       case SparseFormat::kCSC:
         CHECK(dir == EdgeDir::kIn) 
           << "Cannot sample in edges on CSR matrix.";
         if (map_seed_nodes)
-          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
-                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
+          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
+                                                    new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
         else
-          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], mapping[src_vtype], new_nodes_vec[dst_vtype],
-                                                    new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
+          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
+                                                    new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       default:
         LOG(FATAL) << "Unsupported sparse format.";
@@ -359,7 +359,7 @@ HeteroSubgraph SampleNeighborsFused(
       std::vector<std::vector<int64_t> > src_nodes_local(num_threads_col);
       int64_t* mapping_data_dst = mapping[lhs_node_type].Ptr<int64_t>();
       int64_t* cdata = sampled_graphs[etype].indices.Ptr<int64_t>();
-      
+
 #pragma omp parallel num_threads(num_threads_col)
       {
         const int thread_id = omp_get_thread_num();
@@ -371,7 +371,7 @@ HeteroSubgraph SampleNeighborsFused(
             (thread_id + 1) * (num_cols / num_threads_col) +
             std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads_col);
         assert(thread_id + 1 < num_threads_col || end_i == num_cols);
-        
+
         for (int64_t i = start_i; i < end_i; ++i) {
           int64_t picked_idx = cdata[i];
           bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
@@ -385,11 +385,10 @@ HeteroSubgraph SampleNeighborsFused(
 #pragma omp barrier
 #pragma omp master
         {
-          global_prefix_col[0] = new_nodes_vec[lhs_node_type].size();        //CHANGE
+          global_prefix_col[0] = new_nodes_vec[lhs_node_type].size();
           for (int t = 0; t < num_threads_col; ++t) {
             global_prefix_col[t + 1] += global_prefix_col[t];
           }
-
         }
 
 #pragma omp barrier
@@ -406,16 +405,15 @@ HeteroSubgraph SampleNeighborsFused(
           cdata[i] = mapped_idx;
         }
       }
-        int64_t offset = new_nodes_vec[lhs_node_type].size();
+      int64_t offset = new_nodes_vec[lhs_node_type].size();
       new_nodes_vec[lhs_node_type].resize(global_prefix_col.back());
-      for(int thread_id = 0; thread_id < num_threads_col; ++thread_id)
-        {
-          memcpy(new_nodes_vec[lhs_node_type].data() + offset,
-          &src_nodes_local[thread_id][0],
-          src_nodes_local[thread_id].size() * sizeof(int64_t));
-          offset += src_nodes_local[thread_id].size();
-        }
-        }
+      for(int thread_id = 0; thread_id < num_threads_col; ++thread_id) {
+        memcpy(new_nodes_vec[lhs_node_type].data() + offset,
+        &src_nodes_local[thread_id][0],
+        src_nodes_local[thread_id].size() * sizeof(int64_t));
+        offset += src_nodes_local[thread_id].size();
+      }
+    }
   }
 
   // counting how many nodes of each ntype were sampled

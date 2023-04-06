@@ -440,8 +440,8 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
             [F.to_dgl_nd(m) for m in mapping],
             fanout_array, edge_dir, prob_arrays,
             excluded_edges_all_t, replace)
-        # for mapping_vector, src_nodes in zip(mapping, induced_nodes):
-        #     mapping_vector[F.from_dgl_nd(src_nodes)] = -1
+        for mapping_vector, src_nodes in zip(mapping, induced_nodes):
+            mapping_vector[F.from_dgl_nd(src_nodes)] = -1
 
         new_ntypes = (g.ntypes, g.ntypes)
         ret = DGLBlock(subgidx, new_ntypes, g.etypes)

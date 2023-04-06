@@ -862,8 +862,8 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedParallel(
 // independently.
 //three steps
 template <typename IdxType, bool map_seed_nodes>
-CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst,
-                              std::vector<int64_t>& new_nodes_src, std::vector<int64_t>& new_nodes_dst, int64_t num_picks, 
+CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
+                              std::vector<int64_t>& new_seed_nodes, int64_t num_picks, 
                               bool replace, PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
   using namespace aten;
   //  uint64_t startTick, endTick;
@@ -878,13 +878,8 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, 
   const auto& ctx = mat.indptr->ctx;
   const auto& idtype = mat.indptr->dtype;
 
+  IdxType* seed_mapping_data = seed_mapping.Ptr<IdxType>();
 
-  IdxType* mapping_data_dst = mapping_dst.Ptr<IdxType>();
-  IdxType* mapping_data_src = mapping_src.Ptr<IdxType>();
-  //  std::ofstream d_file;
-  //  d_file.open("/home/hesham/fused_debug");
-
- 
   // To leverage OMP parallelization, we create two arrays to store
   // picked src and dst indices. Each array is of length num_rows * num_picks.
   // For rows whose nnz < num_picks, the indices are padded with -1.
@@ -940,7 +935,7 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, 
       const int64_t local_i = i - start_i;
       const IdxType rid = rows_data[i];
       if constexpr (map_seed_nodes)
-        mapping_data_src[rid] = i;
+        seed_mapping_data[rid] = i;
 
       IdxType len = num_picks_fn(
           rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
@@ -998,10 +993,10 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, 
   //  LOG(INFO) << "fused pick three step intermediate = " << (endTick - startTick);
   
   const int64_t num_cols = picked_col->shape[0];
-  new_nodes_src.resize(num_rows);
-  if constexpr (map_seed_nodes)
-    memcpy(new_nodes_src.data(), rows_data, sizeof(int64_t)*num_rows);
-
+  if constexpr (map_seed_nodes) {
+    new_seed_nodes.resize(num_rows);
+    memcpy(new_seed_nodes.data(), rows_data, sizeof(int64_t)*num_rows);
+  }
   //  endTick = __rdtsc();
   
   //  LOG(INFO) << "fused pick three step = " << (endTick - startTick);

@@ -535,8 +535,7 @@ COOMatrix CSRRowWiseSampling(
     NDArray prob_or_mask = NDArray(), bool replace = true);
 
 template<bool map_seed_nodes>
-CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
-                                  std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, NDArray prob_or_mask,
+CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<int64_t>& new_seed_nodes, int64_t num_samples, NDArray prob_or_mask,
                                   bool replace);
 
 std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward(

@@ -184,8 +184,7 @@ COOMatrix CSRRowWiseSampling(
 
 // FloatType is the type of probability data.
 template <DGLDeviceType XPU, typename IdxType, typename DType, bool map_seed_nodes>
-CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
-                        std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, NDArray prob_or_mask, bool replace);
+CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<int64_t>& new_seed_nodes, int64_t num_samples, NDArray prob_or_mask, bool replace);
 
 
 // FloatType is the type of probability data.
@@ -208,8 +207,7 @@ COOMatrix CSRRowWiseSamplingUniform(
     CSRMatrix mat, IdArray rows, int64_t num_samples, bool replace);
 
 template <DGLDeviceType XPU, typename IdType, bool map_seed_nodes>
-CSRMatrix CSRRowWiseSamplingUniformFused(CSRMatrix mat, IdArray rows, IdArray mapping_src, IdArray mapping_dst, 
-                                  std::vector<int64_t>& src_nodes, std::vector<int64_t>& dst_nodes, int64_t num_samples, bool replace);
+CSRMatrix CSRRowWiseSamplingUniformFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<int64_t>& new_seed_nodes, int64_t num_samples, bool replace);
 
 template <DGLDeviceType XPU, typename IdType>
 std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingUniformFusedBackward(
