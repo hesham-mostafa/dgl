@@ -58,13 +58,14 @@ class SAGE(nn.Module):
         # Therefore, we compute the representation of all nodes layer by layer.  The nodes
         # on each layer are of course splitted in batches.
         # TODO: can we standardize this?
+        inf_time = 0
         for l, layer in enumerate(self.layers):
             y = th.zeros(
                 g.num_nodes(),
                 self.n_hidden if l != len(self.layers) - 1 else self.n_classes,
             ).to(device)
 
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
+            sampler = dgl.dataloading.MultiLayerFullNeighborSamplerFused(1)
             dataloader = dgl.dataloading.DataLoader(
                 g,
                 th.arange(g.num_nodes()),
@@ -75,7 +76,9 @@ class SAGE(nn.Module):
                 num_workers=args.num_workers,
             )
 
+            inference_time_1 = time.time()
             for input_nodes, output_nodes, blocks in tqdm.tqdm(dataloader):
+                inference_time_2 = time.time()
                 block = blocks[0].int().to(device)
 
                 h = x[input_nodes]
@@ -86,6 +89,9 @@ class SAGE(nn.Module):
                     h = self.dropout(h)
 
                 y[output_nodes] = h
+                inf_time += inference_time_2 - inference_time_1
+                inference_time_1 = time.time()
+            print("inference_time = ", inf_time)
 
             x = y
         return y
@@ -133,7 +139,7 @@ def run(args, device, data):
     train_nid, val_nid, test_nid, in_feats, labels, n_classes, nfeat, g = data
 
     # Create PyTorch DataLoader for constructing blocks
-    sampler = dgl.dataloading.MultiLayerNeighborSampler(
+    sampler = dgl.dataloading.NeighborSamplerFused(
         [int(fanout) for fanout in args.fan_out.split(",")]
     )
     dataloader = dgl.dataloading.DataLoader(
@@ -164,14 +170,18 @@ def run(args, device, data):
     iter_tput = []
     best_eval_acc = 0
     best_test_acc = 0
+    
+    total_sample_time = 0
+    
     for epoch in range(args.num_epochs):
         tic = time.time()
-
+        sample_time_1 = tic
         # Loop over the dataloader to sample the computation dependency graph as a list of
         # blocks.
         for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
             tic_step = time.time()
-
+            sample_time_2 = tic_step
+            total_sample_time += sample_time_2 - sample_time_1
             # copy block to gpu
             blocks = [blk.int().to(device) for blk in blocks]
 
@@ -195,16 +205,17 @@ def run(args, device, data):
                     if th.cuda.is_available()
                     else 0
                 )
-                print(
-                    "Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB".format(
-                        epoch,
-                        step,
-                        loss.item(),
-                        acc.item(),
-                        np.mean(iter_tput[3:]),
-                        gpu_mem_alloc,
-                    )
-                )
+                # print(
+                #     "Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB".format(
+                #         epoch,
+                #         step,
+                #         loss.item(),
+                #         acc.item(),
+                #         np.mean(iter_tput[3:]),
+                #         gpu_mem_alloc,
+                #     )
+                # )
+            sample_time_1 = time.time()
 
         toc = time.time()
         print("Epoch Time(s): {:.4f}".format(toc - tic))
@@ -229,6 +240,7 @@ def run(args, device, data):
                     best_eval_acc, best_test_acc
                 )
             )
+        print("sampling time: ", total_sample_time)
 
     print("Avg epoch time: {}".format(avg / (epoch - 4)))
     return best_test_acc
@@ -239,10 +251,10 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--gpu",
         type=int,
-        default=0,
+        default=-1,
         help="GPU device ID. Use -1 for CPU training",
     )
-    argparser.add_argument("--num-epochs", type=int, default=20)
+    argparser.add_argument("--num-epochs", type=int, default=1)
     argparser.add_argument("--num-hidden", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=3)
     argparser.add_argument("--fan-out", type=str, default="5,10,15")
@@ -255,7 +267,7 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--num-workers",
         type=int,
-        default=4,
+        default=0,
         help="Number of sampling processes. Use 0 for no extra process.",
     )
     argparser.add_argument("--save-pred", type=str, default="")
@@ -298,7 +310,7 @@ if __name__ == "__main__":
 
     # Run 10 times
     test_accs = []
-    for i in range(10):
+    for i in range(1):
         test_accs.append(run(args, device, data).cpu().numpy())
         print(
             "Average test accuracy:", np.mean(test_accs), "±", np.std(test_accs)

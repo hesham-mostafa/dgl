@@ -20,7 +20,7 @@ v_t = dgl.__version__
 fused = True
 
 def prepare_data(args, device):
-    dataset = DglNodePropPredDataset(name="ogbn-mag")
+    dataset = DglNodePropPredDataset(name="ogbn-mag")#, root="/home/agrabows/repository/dgl/dataset")
     split_idx = dataset.get_idx_split()
     # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
     g, labels = dataset[0]
@@ -258,7 +258,7 @@ def train(
     category = "paper"
     total_sampling_time = 0
     total_forward_backward_time = 0
-    for epoch in range(2):
+    for epoch in range(3):
         num_train = split_idx["train"][category].shape[0]
         pbar = tqdm(total=num_train)
         pbar.set_description(f"Epoch {epoch:02d}")
@@ -267,6 +267,7 @@ def train(
         total_loss = 0
         sample_start_time = time.time()
         for input_nodes, seeds, blocks in train_loader:
+            sample_end_time = time.time()
             blocks = [blk.to(device) for blk in blocks]
             seeds = seeds[
                 category
@@ -274,7 +275,6 @@ def train(
             batch_size = seeds.shape[0]
             input_nodes_indexes = input_nodes["paper"].to(g.device)
             seeds = seeds.to(labels.device)
-            sample_end_time = time.time()
 
             emb = extract_embed(node_embed, input_nodes)
             # Add the batch's raw "paper" features
@@ -345,9 +345,11 @@ def test(g, model, node_embed, y_true, device, split_idx):
     pbar = tqdm(total=y_true.size(0))
     pbar.set_description(f"Inference")
 
+    total_time_inference = 0
     y_hats = list()
-
+    sample_start_time = time.time()
     for input_nodes, seeds, blocks in loader:
+        sample_end_time = time.time()
         blocks = [blk.to(device) for blk in blocks]
         seeds = seeds[
             category
@@ -365,7 +367,9 @@ def test(g, model, node_embed, y_true, device, split_idx):
         y_hats.append(y_hat.cpu())
 
         pbar.update(batch_size)
-
+        total_time_inference += sample_end_time - sample_start_time
+        sample_start_time = time.time()
+    print("total_time_inference: ", total_time_inference)
     pbar.close()
 
     y_pred = th.cat(y_hats, dim=0)

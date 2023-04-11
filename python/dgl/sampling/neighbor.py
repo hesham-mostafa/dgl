@@ -362,7 +362,7 @@ def sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
             frontier = eid_excluder(frontier)
     return frontier if output_device is None else frontier.to(output_device)
 
-
+@profile
 def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                       replace=False, copy_ndata=True, copy_edata=True,
                       _dist_training=False, exclude_edges=None, fused=False, fused_backward=False):
@@ -422,17 +422,18 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
     if fused:
+        mapping_name = '__mapping' + str(os.getpid())
         if len(g.ntypes) != 1:
-            mappings = [torch.LongTensor(g.number_of_nodes(ntype)).fill_(-1) 
-                        for ntype in g.ntypes]
-            mapping_name = '__mapping' + str(os.getpid())
-            g.ndata[mapping_name] = {ntype: mappings[i] 
-                                     for i, ntype in enumerate(g.ntypes)}
-            mapping = [g.ndata['__mapping' + str(os.getpid())][ntype]
+            if(mapping_name not in g.ndata.keys()):
+                mappings = [torch.LongTensor(g.number_of_nodes(ntype)).fill_(-1) 
+                            for ntype in g.ntypes]
+                g.ndata[mapping_name] = {ntype: mappings[i] 
+                                        for i, ntype in enumerate(g.ntypes)}
+            mapping = [g.ndata[mapping_name][ntype]
                        for ntype in g.ntypes]
         else:
-            mapping_name = '__mapping' + str(os.getpid())
-            g.ndata[mapping_name] = torch.LongTensor(g.number_of_nodes()).fill_(-1)
+            if(mapping_name not in g.ndata):
+                g.ndata[mapping_name] = torch.LongTensor(g.number_of_nodes()).fill_(-1)
             mapping = [g.ndata[mapping_name]]
 
         subgidx, induced_nodes, induced_edges = _CAPI_DGLSampleNeighborsFused(
