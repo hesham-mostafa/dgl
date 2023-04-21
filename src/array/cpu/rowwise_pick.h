@@ -862,7 +862,7 @@ std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedParallel(
 // independently.
 //three steps
 template <typename IdxType, bool map_seed_nodes>
-CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
                               std::vector<int64_t>& new_seed_nodes, int64_t num_picks, 
                               bool replace, PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
   using namespace aten;
@@ -908,7 +908,7 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
   // runtime::parallel_for does not handle exceptions well (directly aborts when
   // an exception pops up). It runs faster though because there is less
   // scheduling.  Need to handle exceptions better.
-  IdArray  picked_col, picked_idx;
+  IdArray  picked_col, picked_idx, picked_coo_rows;
 
   IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
   IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
@@ -951,12 +951,14 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
       }
       picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
       picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_coo_rows = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
 
     }
 
 #pragma omp barrier
     IdxType* picked_cdata = picked_col.Ptr<IdxType>();
     IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+    IdxType* picked_rows = picked_coo_rows.Ptr<IdxType>();
 
 
     const IdxType thread_offset = global_prefix[thread_id];
@@ -982,12 +984,12 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
         const IdxType picked = picked_idata[row_offset + j];
         picked_cdata[row_offset + j] = indices[picked];
         picked_idata[row_offset + j] = data ? data[picked] : picked;
+        picked_rows[row_offset + j] = i;
       }
     }
   }
   block_csr_indptr_data[num_rows] = global_prefix.back();
 
-  IdxType* cdata = picked_col.Ptr<IdxType>();  
 
   //  endTick = __rdtsc();
   //  LOG(INFO) << "fused pick three step intermediate = " << (endTick - startTick);
@@ -1001,8 +1003,8 @@ CSRMatrix CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
   
   //  LOG(INFO) << "fused pick three step = " << (endTick - startTick);
 
-  return CSRMatrix(num_rows, num_cols,
-      block_csr_indptr,picked_col,picked_idx);
+  return std::make_pair(CSRMatrix(num_rows, num_cols,
+      block_csr_indptr,picked_col,picked_idx), picked_coo_rows);
 }
 
   

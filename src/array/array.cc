@@ -596,9 +596,9 @@ COOMatrix CSRRowWiseSampling(
 }
 
 template<bool map_seed_nodes>
-CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<int64_t>& new_seed_nodes,
+std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<int64_t>& new_seed_nodes,
                                   int64_t num_samples, NDArray prob_or_mask, bool replace) {
-  CSRMatrix ret;
+  std::pair<CSRMatrix,IdArray> ret;
   if (IsNullArray(prob_or_mask)) {
     ATEN_CSR_SWITCH_CUDA_UVA(
         mat, rows, XPU, IdType, "CSRRowWiseSamplingUniformFused", {
@@ -621,10 +621,10 @@ CSRMatrix CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapp
   return ret;
 }
 
-template CSRMatrix CSRRowWiseSamplingFused<true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
                                                  int64_t, NDArray, bool);
 
-template CSRMatrix CSRRowWiseSamplingFused<false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
                                                  int64_t, NDArray, bool);
 
 std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward(

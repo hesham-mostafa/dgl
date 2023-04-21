@@ -22,7 +22,7 @@ class NeighborSamplerFused(BlockSampler):
         self.prob = prob or mask
         self.replace = replace
 
-    #@profile
+
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         output_nodes = seed_nodes
         blocks = []
@@ -208,7 +208,7 @@ class NeighborSampler(BlockSampler):
         self.prob = prob or mask
         self.replace = replace
 
-    #@profile
+
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         output_nodes = seed_nodes
         blocks = []

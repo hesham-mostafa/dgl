@@ -362,7 +362,7 @@ def sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
             frontier = eid_excluder(frontier)
     return frontier if output_device is None else frontier.to(output_device)
 
-@profile
+
 def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                       replace=False, copy_ndata=True, copy_edata=True,
                       _dist_training=False, exclude_edges=None, fused=False, fused_backward=False):

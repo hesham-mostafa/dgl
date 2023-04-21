@@ -287,6 +287,7 @@ HeteroSubgraph SampleNeighborsFused(
   DGLContext ctx = aten::GetContextOf(nodes);
 
   std::vector<CSRMatrix> sampled_graphs;
+  std::vector<IdArray> sampled_coo_rows;
   std::vector<IdArray> induced_edges;
   std::vector<IdArray> induced_vertices;
   std::vector<int64_t> num_nodes_per_type;
@@ -306,11 +307,12 @@ HeteroSubgraph SampleNeighborsFused(
     if (num_nodes ==0 || fanouts[etype] == 0) {
       // Nothing to sample for this etype, create a placeholder relation graph
       sampled_graphs.push_back(CSRMatrix());
+      sampled_coo_rows.push_back(IdArray());
       induced_edges.push_back(aten::NullArray(hg->DataType(), ctx));
     } else {
       bool map_seed_nodes = !seed_nodes_mapped[rhs_node_type];
       // sample from one relation graph
-      CSRMatrix sampled_csr;
+      std::pair<CSRMatrix, IdArray> sampled_graph;
       auto req_fmt = (dir == EdgeDir::kOut) ? CSR_CODE : CSC_CODE;
       auto avail_fmt = hg->SelectFormat(etype, req_fmt);
       switch (avail_fmt) {
@@ -320,33 +322,36 @@ HeteroSubgraph SampleNeighborsFused(
         // In heterographs nodes of two diffrent types can be connected
         // therefore two diffrent mappings and node vectors are needed
         if (map_seed_nodes)
-          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
+          sampled_graph = aten::CSRRowWiseSamplingFused<true>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
                                                     new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
         else
-          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
+          sampled_graph = aten::CSRRowWiseSamplingFused<false>(hg->GetCSRMatrix(etype), nodes_ntype, mapping[src_vtype],
                                                     new_nodes_vec[src_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       case SparseFormat::kCSC:
         CHECK(dir == EdgeDir::kIn) 
           << "Cannot sample in edges on CSR matrix.";
         if (map_seed_nodes)
-          sampled_csr = aten::CSRRowWiseSamplingFused<true>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
+          sampled_graph = aten::CSRRowWiseSamplingFused<true>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
                                                     new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
         else
-          sampled_csr = aten::CSRRowWiseSamplingFused<false>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
+          sampled_graph = aten::CSRRowWiseSamplingFused<false>(hg->GetCSCMatrix(etype), nodes_ntype, mapping[dst_vtype], 
                                                     new_nodes_vec[dst_vtype], fanouts[etype], prob_or_mask[etype], replace);
         break;
       default:
         LOG(FATAL) << "Unsupported sparse format.";
       }
       seed_nodes_mapped[rhs_node_type]++;
-      sampled_graphs.push_back(sampled_csr);
-      induced_edges.push_back(sampled_csr.data);
+      sampled_graphs.push_back(sampled_graph.first);
+      induced_edges.push_back(sampled_graph.first.data);
+      sampled_coo_rows.push_back(sampled_graph.second);
     }
   }
 
+
+
+
   // map indices
-  // refactoring needed, probably move to another function
   for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
     auto pair = hg->meta_graph()->FindEdge(etype);
     const dgl_type_t src_vtype = pair.first;
@@ -371,7 +376,7 @@ HeteroSubgraph SampleNeighborsFused(
             (thread_id + 1) * (num_cols / num_threads_col) +
             std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads_col);
         assert(thread_id + 1 < num_threads_col || end_i == num_cols);
-
+                                                                                                                  // O (num_edges / num_threads)  | memory barrier
         for (int64_t i = start_i; i < end_i; ++i) {
           int64_t picked_idx = cdata[i];
           bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
@@ -386,6 +391,7 @@ HeteroSubgraph SampleNeighborsFused(
 #pragma omp master
         {
           global_prefix_col[0] = new_nodes_vec[lhs_node_type].size();
+                                                                                                                  // O (num_threads)
           for (int t = 0; t < num_threads_col; ++t) {
             global_prefix_col[t + 1] += global_prefix_col[t];
           }
@@ -393,10 +399,12 @@ HeteroSubgraph SampleNeighborsFused(
 
 #pragma omp barrier
         int64_t mapping_shift = global_prefix_col[thread_id];
+                                                                                                                  // O (unique_nodes / num_threads)
         for (int i = 0; i < src_nodes_local[thread_id].size(); ++i) 
           mapping_data_dst[src_nodes_local[thread_id][i]] = mapping_shift + i;
         
 #pragma omp barrier
+                                                                                                                  // O (num_edges / num_threads)
         for (int64_t i = start_i; i < end_i; ++i) {
           int64_t picked_idx = cdata[i];
           int64_t mapped_idx = mapping_data_dst[picked_idx];
@@ -418,6 +426,7 @@ HeteroSubgraph SampleNeighborsFused(
 
   // counting how many nodes of each ntype were sampled
   num_nodes_per_type.reserve(2 * hg->NumVertexTypes());
+                                                                                                                  // O (num_threads)
   for (size_t i = 0; i < hg->NumVertexTypes(); i++) {
     num_nodes_per_type[i] = new_nodes_vec[i].size();
     num_nodes_per_type[hg->NumVertexTypes() + i] = nodes[i]->shape[0];
@@ -436,12 +445,10 @@ HeteroSubgraph SampleNeighborsFused(
     } else {
       CSRMatrix graph = sampled_graphs[etype];
       if (dir == EdgeDir::kOut) {
-        CSRMatrix block_matrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indptr, graph.indices);
-        subrels[etype] = UnitGraph::CreateFromCSR(2, block_matrix, ALL_CODE);
+        subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, graph, CSRMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indptr, graph.indices), COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], sampled_coo_rows[etype], graph.indices), false, true, true, ALL_CODE);
       }
       else {
-        CSRMatrix block_matrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices);
-        subrels[etype] = UnitGraph::CreateFromCSC(2, block_matrix, ALL_CODE);
+        subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices), graph, COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indices, sampled_coo_rows[etype]), true, false, true, ALL_CODE);
       }
     }
   }
