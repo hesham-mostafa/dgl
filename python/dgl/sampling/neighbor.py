@@ -468,7 +468,10 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                                 g._idtype_str).tousertensor(
                                 ctx=F.to_backend_ctx(g._graph.ctx))
                                 for ntype in g.ntypes]
-                node_frames = utils.extract_node_subframes_for_block(g, src_node_ids, dst_node_ids) 
+                node_frames = utils.extract_node_subframes_for_block(g, src_node_ids, dst_node_ids)
+                mapping_name = '__mapping' + str(os.getpid())
+                for i in range(len(node_frames)):
+                    del node_frames[i][mapping_name]
                 utils.set_new_frames(ret, node_frames=node_frames)
             else:
                 node_frames = utils.extract_node_subframes(g, device)

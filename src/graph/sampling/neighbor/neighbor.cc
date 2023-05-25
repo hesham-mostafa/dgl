@@ -24,6 +24,71 @@ using namespace dgl::aten;
 namespace dgl {
 namespace sampling {
 
+void ExcludeCertainEdgesFused(
+    std::vector<CSRMatrix>& sampled_graphs, std::vector<IdArray>& induced_edges,
+    std::vector<IdArray>& sampled_coo_rows, const std::vector<IdArray>& exclude_edges,
+    std::vector<FloatArray>* weights = nullptr) {
+  std::vector<IdArray> remain_induced_edges(sampled_graphs.size());
+  std::vector<IdArray> remain_indptrs(sampled_graphs.size());
+  std::vector<IdArray> remain_indices(sampled_graphs.size());
+  std::vector<IdArray> remain_coo_rows(sampled_graphs.size());
+  std::vector<FloatArray> remain_weights(sampled_graphs.size());
+  for (dgl_type_t etype = 0; etype < sampled_graphs.size(); ++etype) {
+    if (exclude_edges[etype].GetSize() == 0 || sampled_graphs[etype].num_rows == 0) {
+      remain_induced_edges[etype] = induced_edges[etype];
+      if (weights) remain_weights[etype] = (*weights)[etype];
+      continue;
+    }
+    ATEN_ID_TYPE_SWITCH(sampled_graphs[etype].indices->dtype, IdType, {
+      const auto dtype = weights && (*weights)[etype]->shape[0]
+                             ? (*weights)[etype]->dtype
+                             : DGLDataType{kDGLFloat, 8 * sizeof(float), 1};
+      ATEN_FLOAT_TYPE_SWITCH(dtype, FloatType, "weights", {
+        IdType* indptr = sampled_graphs[etype].indptr.Ptr<IdType>();
+        IdType* indices = sampled_graphs[etype].indices.Ptr<IdType>();
+        IdType* coo_rows = sampled_coo_rows[etype].Ptr<IdType>();
+        IdType* induced_edges_data = induced_edges[etype].Ptr<IdType>();
+        FloatType* weights_data = weights && (*weights)[etype]->shape[0]
+                                      ? (*weights)[etype].Ptr<FloatType>()
+                                      : nullptr;
+        const IdType exclude_edges_len = exclude_edges[etype]->shape[0];
+        std::sort(
+            exclude_edges[etype].Ptr<IdType>(),
+            exclude_edges[etype].Ptr<IdType>() + exclude_edges_len);
+        const IdType* exclude_edges_data = exclude_edges[etype].Ptr<IdType>();
+        IdType outIndices = 0;
+        for (IdType row = 0; row < sampled_graphs[etype].indptr->shape[0] - 1; ++row) {
+          auto tmp_row = indptr[row];
+          if (outIndices != indptr[row])
+            indptr[row] = outIndices;
+          for (IdType col = tmp_row; col < indptr[row + 1]; ++col) {
+            if (!std::binary_search(
+                    exclude_edges_data, exclude_edges_data + exclude_edges_len,
+                    induced_edges_data[col])) {
+              indices[outIndices] = indices[col];
+              induced_edges_data[outIndices] = induced_edges_data[col];
+              coo_rows[outIndices] = coo_rows[col];
+              //std::cout << induced_edges_data[col] << " ";
+              if (weights_data) weights_data[outIndices] = weights_data[col];
+              ++outIndices;
+            }
+          }
+        }
+        indptr[sampled_graphs[etype].indptr->shape[0] - 1] = outIndices;
+        remain_induced_edges[etype] =
+            aten::IndexSelect(induced_edges[etype], 0, outIndices);
+        remain_weights[etype] =
+            weights_data ? aten::IndexSelect((*weights)[etype], 0, outIndices)
+                         : NullArray();
+        remain_indices[etype] = aten::IndexSelect(sampled_graphs[etype].indices, 0, outIndices);
+        sampled_coo_rows[etype] = aten::IndexSelect(sampled_coo_rows[etype], 0, outIndices);
+        sampled_graphs[etype] = CSRMatrix(sampled_graphs[etype].num_rows, outIndices,
+            sampled_graphs[etype].indptr, remain_indices[etype], remain_induced_edges[etype]);
+      });
+    });
+  }
+}
+
 std::pair<HeteroSubgraph, std::vector<FloatArray>> ExcludeCertainEdges(
     const HeteroSubgraph& sg, const std::vector<IdArray>& exclude_edges,
     const std::vector<FloatArray>* weights = nullptr) {
@@ -270,9 +335,7 @@ HeteroSubgraph SampleNeighbors(
 }
 
 
-
-HeteroSubgraph SampleNeighborsFused(
-                                    const HeteroGraphPtr hg, const std::vector<IdArray>& nodes, std::vector<IdArray>& mapping,
+std::tuple<HeteroGraphPtr, std::vector<IdArray>, std::vector<IdArray>> SampleNeighborsFused(const HeteroGraphPtr hg, const std::vector<IdArray>& nodes, std::vector<IdArray>& mapping,
                                     const std::vector<int64_t>& fanouts, EdgeDir dir,
                                     const std::vector<NDArray>& prob_or_mask,
                                     const std::vector<IdArray>& exclude_edges, bool replace) {
@@ -348,8 +411,12 @@ HeteroSubgraph SampleNeighborsFused(
     }
   }
 
-
-
+  if (!exclude_edges.empty()) {
+    ExcludeCertainEdgesFused(sampled_graphs, induced_edges, sampled_coo_rows, exclude_edges);
+    for (size_t i = 0; i < hg->NumEdgeTypes(); i++) {
+      induced_edges[i] = sampled_graphs[i].data;
+    }
+  }
 
   // map indices
   for (dgl_type_t etype = 0; etype < hg->NumEdgeTypes(); ++etype) {
@@ -357,14 +424,13 @@ HeteroSubgraph SampleNeighborsFused(
     const dgl_type_t src_vtype = pair.first;
     const dgl_type_t dst_vtype = pair.second;
     const dgl_type_t lhs_node_type = (dir == EdgeDir::kIn) ? src_vtype : dst_vtype;
-    if (sampled_graphs[etype].num_rows != 0) {
+    if (sampled_graphs[etype].num_cols != 0) {
       auto num_cols = sampled_graphs[etype].num_cols;
       const int num_threads_col = runtime::compute_num_threads(0, num_cols, 1);
       std::vector<int64_t> global_prefix_col(num_threads_col + 1, 0);
       std::vector<std::vector<int64_t> > src_nodes_local(num_threads_col);
       int64_t* mapping_data_dst = mapping[lhs_node_type].Ptr<int64_t>();
       int64_t* cdata = sampled_graphs[etype].indices.Ptr<int64_t>();
-
 #pragma omp parallel num_threads(num_threads_col)
       {
         const int thread_id = omp_get_thread_num();
@@ -376,11 +442,10 @@ HeteroSubgraph SampleNeighborsFused(
             (thread_id + 1) * (num_cols / num_threads_col) +
             std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads_col);
         assert(thread_id + 1 < num_threads_col || end_i == num_cols);
-                                                                                                                  // O (num_edges / num_threads)  | memory barrier
         for (int64_t i = start_i; i < end_i; ++i) {
           int64_t picked_idx = cdata[i];
           bool spot_claimed = __sync_bool_compare_and_swap(&mapping_data_dst[picked_idx], -1,
-                      0);      
+                      0);
           if(spot_claimed)
             src_nodes_local[thread_id].push_back(picked_idx);
 
@@ -391,7 +456,6 @@ HeteroSubgraph SampleNeighborsFused(
 #pragma omp master
         {
           global_prefix_col[0] = new_nodes_vec[lhs_node_type].size();
-                                                                                                                  // O (num_threads)
           for (int t = 0; t < num_threads_col; ++t) {
             global_prefix_col[t + 1] += global_prefix_col[t];
           }
@@ -399,12 +463,10 @@ HeteroSubgraph SampleNeighborsFused(
 
 #pragma omp barrier
         int64_t mapping_shift = global_prefix_col[thread_id];
-                                                                                                                  // O (unique_nodes / num_threads)
         for (int i = 0; i < src_nodes_local[thread_id].size(); ++i) 
           mapping_data_dst[src_nodes_local[thread_id][i]] = mapping_shift + i;
         
 #pragma omp barrier
-                                                                                                                  // O (num_edges / num_threads)
         for (int64_t i = start_i; i < end_i; ++i) {
           int64_t picked_idx = cdata[i];
           int64_t mapped_idx = mapping_data_dst[picked_idx];
@@ -425,8 +487,7 @@ HeteroSubgraph SampleNeighborsFused(
   }
 
   // counting how many nodes of each ntype were sampled
-  num_nodes_per_type.reserve(2 * hg->NumVertexTypes());
-                                                                                                                  // O (num_threads)
+  num_nodes_per_type.resize(2 * hg->NumVertexTypes());
   for (size_t i = 0; i < hg->NumVertexTypes(); i++) {
     num_nodes_per_type[i] = new_nodes_vec[i].size();
     num_nodes_per_type[hg->NumVertexTypes() + i] = nodes[i]->shape[0];
@@ -462,14 +523,8 @@ HeteroSubgraph SampleNeighborsFused(
   const auto new_meta_graph =
       ImmutableGraph::CreateFromCOO(hg->NumVertexTypes() * 2, etypes.src, new_dst);
 
-  ret.graph =
-      CreateHeteroGraph(new_meta_graph, subrels, num_nodes_per_type);
-  ret.induced_vertices = std::move(induced_vertices);
-  ret.induced_edges = std::move(induced_edges);
-  if (!exclude_edges.empty()) {
-    return ExcludeCertainEdges(ret, exclude_edges).first;
-  }
-  return ret;
+  HeteroGraphPtr new_graph = CreateHeteroGraph(new_meta_graph, subrels, num_nodes_per_type);
+  return std::make_tuple(new_graph, induced_edges, induced_vertices);
 }
 
 
@@ -869,24 +924,19 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighborsFused")
           << "Invalid edge direction. Must be \"in\" or \"out\".";
       EdgeDir dir = (dir_str == "in") ? EdgeDir::kIn : EdgeDir::kOut;
 
-      std::shared_ptr<HeteroSubgraph> subg(new HeteroSubgraph);
-      *subg = sampling::SampleNeighborsFused(
+      HeteroGraphPtr new_graph;
+      std::vector<IdArray> induced_edges;
+      std::vector<IdArray> induced_vertices;
+
+      std::tie(new_graph, induced_edges, induced_vertices) = SampleNeighborsFused(
         hg.sptr(), nodes, mapping, fanouts, dir, prob_or_mask, exclude_edges, replace);
-      // Basing on HeteroSubgraph create bipartite HeteroGraphPtr
-      std::vector<HeteroGraphPtr> subrels(hg->NumEdgeTypes());
-      for (size_t i = 0; i < hg->NumEdgeTypes(); i++) {
-        subrels[i] = subg->graph->GetRelationGraph(i);
-      }
 
       List<Value> lhs_nodes_ref;
-      for (IdArray &array : subg->induced_vertices)
+      for (IdArray &array : induced_vertices)
         lhs_nodes_ref.push_back(Value(MakeValue(array)));
       List<Value> induced_edges_ref;
-      for (IdArray &array : subg->induced_edges)
+      for (IdArray &array : induced_edges)
         induced_edges_ref.push_back(Value(MakeValue(array)));
-      
-      const HeteroGraphPtr new_graph =
-        CreateHeteroGraph(subg->graph->meta_graph(), subrels, subg->graph->NumVerticesPerType());
       List<ObjectRef> ret;
       ret.push_back(HeteroGraphRef(new_graph));
       ret.push_back(lhs_nodes_ref);

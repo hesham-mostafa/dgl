@@ -1516,6 +1516,215 @@ def test_sample_neighbors_exclude_edges_homoG(dtype):
     )
 
 
+@pytest.mark.parametrize("dtype", ["int64"])
+def test_sample_neighbors_fused_exclude_edges_heteroG(dtype):
+    for _ in range(100):
+        d_i_d_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_i_d_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_i_d_u_nodes.shape, dtype=dtype)
+        )
+        d_i_g_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_i_g_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_i_g_u_nodes.shape, dtype=dtype)
+        )
+        d_t_d_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_t_d_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_t_d_u_nodes.shape, dtype=dtype)
+        )
+
+        g = dgl.heterograph(
+            {
+                ("drug", "interacts", "drug"): (d_i_d_u_nodes, d_i_d_v_nodes),
+                ("drug", "interacts", "gene"): (d_i_g_u_nodes, d_i_g_v_nodes),
+                ("drug", "treats", "disease"): (d_t_d_u_nodes, d_t_d_v_nodes),
+            }
+        ).to(F.ctx())
+
+        (U, V, EID) = (0, 1, 2)
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        did_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        did_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        sampled_amount = np.random.randint(low=1, high=10, dtype=dtype)
+
+        drug_i_drug_edges = g.all_edges(
+            form="all", etype=("drug", "interacts", "drug")
+        )
+        excluded_d_i_d_edges = drug_i_drug_edges[EID][did_b_idx:did_e_idx]
+        sampled_drug_node = drug_i_drug_edges[V][nd_b_idx:nd_e_idx]
+        did_excluded_nodes_U = drug_i_drug_edges[U][did_b_idx:did_e_idx]
+        did_excluded_nodes_V = drug_i_drug_edges[V][did_b_idx:did_e_idx]
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        dig_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        dig_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        drug_i_gene_edges = g.all_edges(
+            form="all", etype=("drug", "interacts", "gene")
+        )
+        excluded_d_i_g_edges = drug_i_gene_edges[EID][dig_b_idx:dig_e_idx]
+        dig_excluded_nodes_U = drug_i_gene_edges[U][dig_b_idx:dig_e_idx]
+        dig_excluded_nodes_V = drug_i_gene_edges[V][dig_b_idx:dig_e_idx]
+        sampled_gene_node = drug_i_gene_edges[V][nd_b_idx:nd_e_idx]
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        dtd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        dtd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        drug_t_dis_edges = g.all_edges(
+            form="all", etype=("drug", "treats", "disease")
+        )
+        excluded_d_t_d_edges = drug_t_dis_edges[EID][dtd_b_idx:dtd_e_idx]
+        dtd_excluded_nodes_U = drug_t_dis_edges[U][dtd_b_idx:dtd_e_idx]
+        dtd_excluded_nodes_V = drug_t_dis_edges[V][dtd_b_idx:dtd_e_idx]
+        sampled_disease_node = drug_t_dis_edges[V][nd_b_idx:nd_e_idx]
+        excluded_edges = {
+            ("drug", "interacts", "drug"): excluded_d_i_d_edges,
+            ("drug", "interacts", "gene"): excluded_d_i_g_edges,
+            ("drug", "treats", "disease"): excluded_d_t_d_edges,
+        }
+
+        sg = dgl.sampling.sample_neighbors(
+            g,
+            {
+                "drug": sampled_drug_node,
+                "gene": sampled_gene_node,
+                "disease": sampled_disease_node,
+            },
+            sampled_amount,
+            exclude_edges=excluded_edges,
+            fused = True
+        )
+        # sg = dgl.transforms.to_block(sg,
+        #     {
+        #         "drug": sampled_drug_node,
+        #         "gene": sampled_gene_node,
+        #         "disease": sampled_disease_node,
+        #     })
+
+        node_lists = [{"nodeU": did_excluded_nodes_U, "nodeV": did_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "drug"}, 
+                    {"nodeU": dig_excluded_nodes_U, "nodeV": dig_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "gene"},
+                    {"nodeU": dtd_excluded_nodes_U, "nodeV": dtd_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "disease"}]
+        print(dig_excluded_nodes_U)
+        print(dig_excluded_nodes_V)
+        for node_list in node_lists:
+            nodes_mapped_U = []
+            nodes_mapped_V = []
+            for i in range(len(node_list["nodeU"])):
+                u = -1
+                v = -1
+                ntypeU = node_list["nodeTypeU"]
+                ntypeV = node_list["nodeTypeV"]
+                for j in range(len(sg.srcdata['_ID'][ntypeU])):
+                    if sg.srcdata['_ID'][ntypeU][j] == node_list["nodeU"][i]:
+                        u = j
+                        break
+                for j in range(len(sg.dstdata['_ID'][ntypeV])):
+                    if sg.dstdata['_ID'][ntypeV][j] == node_list["nodeV"][i]:
+                        v = j
+                        break
+                if u >= 0 and v >= 0:
+                    nodes_mapped_U.append(u)
+                    nodes_mapped_V.append(v)
+            node_list["nodeU"] = nodes_mapped_U
+            node_list["nodeV"] = nodes_mapped_V
+
+        did_excluded_nodes_U = node_lists[0]["nodeU"]
+        did_excluded_nodes_V = node_lists[0]["nodeV"]
+        dig_excluded_nodes_U = node_lists[1]["nodeU"]
+        dig_excluded_nodes_V = node_lists[1]["nodeV"]
+        dtd_excluded_nodes_U = node_lists[2]["nodeU"]
+        dtd_excluded_nodes_V = node_lists[2]["nodeV"]
+
+        print(dig_excluded_nodes_U)
+        print(dig_excluded_nodes_V)
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    did_excluded_nodes_U,
+                    did_excluded_nodes_V,
+                    etype=("drug", "interacts", "drug"),
+                )
+            )
+        )
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    dig_excluded_nodes_U,
+                    dig_excluded_nodes_V,
+                    etype=("drug", "interacts", "gene"),
+                )
+            )
+        )
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    dtd_excluded_nodes_U,
+                    dtd_excluded_nodes_V,
+                    etype=("drug", "treats", "disease"),
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize("dtype", ["int64"])
+def test_sample_neighbors_fused_exclude_edges_homoG(dtype):
+    for _ in range(100):
+        u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=u_nodes.shape, dtype=dtype)
+        )
+        g = dgl.graph((u_nodes, v_nodes)).to(F.ctx())
+        (U, V, EID) = (0, 1, 2)
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        sampled_amount = np.random.randint(low=1, high=10, dtype=dtype)
+
+        g_edges = g.all_edges(form="all")
+        excluded_edges = g_edges[EID][b_idx:e_idx]
+        print(excluded_edges)
+        res,ind = np.unique(g_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+        sampled_node = res[np.argsort(ind)]
+        print(sampled_node)
+        excluded_nodes_U = g_edges[U][b_idx:e_idx]
+        excluded_nodes_V = g_edges[V][b_idx:e_idx]
+
+        sg = dgl.sampling.sample_neighbors(
+            g, sampled_node, sampled_amount, exclude_edges=excluded_edges, fused=True
+        )
+
+        excluded_nodes_U_mapped = []
+        excluded_nodes_V_mapped = []
+
+        for i in range(len(excluded_nodes_U)):
+            u = -1
+            v = -1
+            for j in range(len(sg.srcdata['_ID'])):
+                if sg.srcdata['_ID'][j] == excluded_nodes_U[i]:
+                    u = j
+                    break
+            for j in range(len(sg.dstdata['_ID'])):
+                if sg.dstdata['_ID'][j] == excluded_nodes_V[i]:
+                    v = j
+                    break
+            if u >= 0 and v >= 0:
+                excluded_nodes_U_mapped.append(u)
+                excluded_nodes_V_mapped.append(v)
+
+        assert not np.any(F.asnumpy(sg.has_edges_between(excluded_nodes_U_mapped, excluded_nodes_V_mapped)))
+
 @pytest.mark.parametrize("dtype", ["int32", "int64"])
 def test_global_uniform_negative_sampling(dtype):
     g = dgl.graph(([], []), num_nodes=1000).to(F.ctx())

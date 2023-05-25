@@ -30,7 +30,7 @@ class NeighborSamplerFused(BlockSampler):
             block = g.sample_neighbors(
                 seed_nodes, fanout, edge_dir=self.edge_dir, prob=self.prob,
                 replace=self.replace, output_device=self.output_device, fused=True,
-                copy_edata=True, copy_ndata=True)
+                copy_edata=True, copy_ndata=True, exclude_edges=exclude_eids)
 
             seed_nodes = block.srcdata[NID]
             blocks.insert(0, block)
