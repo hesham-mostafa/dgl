@@ -7,6 +7,38 @@ import dgl
 import numpy as np
 import pytest
 
+def recreate_graph(sg, g, edgeDir='in'):
+    edges_dict = {}
+    for etype in sg._canonical_etypes:
+        edges = sg.edges(etype=etype)
+        new_row = []
+        new_col = []
+        for i in range(len(edges[0])):
+            if edgeDir=='in':
+                if len(sg._canonical_etypes) == 1:
+                    new_row.append(sg.srcdata['_ID'][edges[0][i]])
+                    new_col.append(sg.dstdata['_ID'][edges[1][i]])
+                else:
+                    new_row.append(sg.srcdata['_ID'][etype[0]][edges[0][i]])
+                    new_col.append(sg.dstdata['_ID'][etype[2]][edges[1][i]])
+            elif edgeDir=='out':
+                if len(sg._canonical_etypes) == 1:
+                    new_row.append(sg.dstdata['_ID'][edges[0][i]])
+                    new_col.append(sg.srcdata['_ID'][edges[1][i]])
+                else:
+                    new_row.append(sg.dstdata['_ID'][etype[0]][edges[0][i]])
+                    new_col.append(sg.srcdata['_ID'][etype[2]][edges[1][i]])
+        edges_dict[etype] = (F.tensor(new_row, dtype=edges[0].dtype), F.tensor(new_col, dtype=edges[0].dtype))
+    
+    num_nodes_dict = {}
+    for ntype in g.ntypes:
+        num_nodes_dict[ntype] = g.num_nodes(ntype)
+
+    ret = dgl.heterograph(edges_dict, num_nodes_dict=num_nodes_dict)
+    for edata in sg.edata:
+        ret.edata[edata] = sg.edata[edata]
+    return ret
+
 
 def check_random_walk(g, metapath, traces, ntypes, prob=None, trace_eids=None):
     traces = F.asnumpy(traces)
@@ -560,9 +592,10 @@ def _test_sample_neighbors(hypersparse, prob):
 
     def _test1(p, replace):
         subg = dgl.sampling.sample_neighbors(
-            g, [0, 1], -1, prob=p, replace=replace
+            g, [0, 1], -1, prob=p, replace=replace, fused=True
         )
-        assert subg.num_nodes() == g.num_nodes()
+        subg = recreate_graph(subg, g)
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans, e_ans = g.in_edges([0, 1], form="all")
         if p is not None:
@@ -577,10 +610,11 @@ def _test_sample_neighbors(hypersparse, prob):
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
-                g, [0, 1], 2, prob=p, replace=replace
+                g, [0, 1], 2, prob=p, replace=replace, fused=True
             )
-            assert subg.num_nodes() == g.num_nodes()
-            assert subg.num_edges() == 4
+            subg = recreate_graph(subg, g)
+            assert subg.number_of_nodes() == g.number_of_nodes()
+            assert subg.number_of_edges() == 4
             u, v = subg.edges()
             assert set(F.asnumpy(F.unique(v))) == {0, 1}
             assert F.array_equal(
@@ -601,9 +635,10 @@ def _test_sample_neighbors(hypersparse, prob):
 
     def _test2(p, replace):  # fanout > #neighbors
         subg = dgl.sampling.sample_neighbors(
-            g, [0, 2], -1, prob=p, replace=replace
+            g, [0, 2], -1, prob=p, replace=replace, fused=True
         )
-        assert subg.num_nodes() == g.num_nodes()
+        subg = recreate_graph(subg, g)
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans, e_ans = g.in_edges([0, 2], form="all")
         if p is not None:
@@ -618,11 +653,12 @@ def _test_sample_neighbors(hypersparse, prob):
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
-                g, [0, 2], 2, prob=p, replace=replace
+                g, [0, 2], 2, prob=p, replace=replace, fused=True
             )
-            assert subg.num_nodes() == g.num_nodes()
+            subg = recreate_graph(subg, g)
+            assert subg.number_of_nodes() == g.number_of_nodes()
             num_edges = 4 if replace else 3
-            assert subg.num_edges() == num_edges
+            assert subg.number_of_edges() == num_edges
             u, v = subg.edges()
             assert set(F.asnumpy(F.unique(v))) == {0, 2}
             assert F.array_equal(
@@ -642,25 +678,27 @@ def _test_sample_neighbors(hypersparse, prob):
 
     def _test3(p, replace):
         subg = dgl.sampling.sample_neighbors(
-            hg, {"user": [0, 1], "game": 0}, -1, prob=p, replace=replace
+            hg, {"user": [0, 1], "game": 0}, -1, prob=p, replace=replace, fused=True
         )
+        subg = recreate_graph(subg, hg)
         assert len(subg.ntypes) == 3
         assert len(subg.etypes) == 4
-        assert subg["follow"].num_edges() == 6 if p is None else 4
-        assert subg["play"].num_edges() == 1
-        assert subg["liked-by"].num_edges() == 4
-        assert subg["flips"].num_edges() == 0
+        assert subg["follow"].number_of_edges() == 6 if p is None else 4
+        assert subg["play"].number_of_edges() == 1
+        assert subg["liked-by"].number_of_edges() == 4
+        assert subg["flips"].number_of_edges() == 0
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
-                hg, {"user": [0, 1], "game": 0}, 2, prob=p, replace=replace
+                hg, {"user": [0, 1], "game": 0}, 2, prob=p, replace=replace, fused=True
             )
+            subg = recreate_graph(subg, hg)
             assert len(subg.ntypes) == 3
             assert len(subg.etypes) == 4
-            assert subg["follow"].num_edges() == 4
-            assert subg["play"].num_edges() == 2 if replace else 1
-            assert subg["liked-by"].num_edges() == 4 if replace else 3
-            assert subg["flips"].num_edges() == 0
+            assert subg["follow"].number_of_edges() == 4
+            assert subg["play"].number_of_edges() == 2 if replace else 1
+            assert subg["liked-by"].number_of_edges() == 4 if replace else 3
+            assert subg["flips"].number_of_edges() == 0
 
     _test3(prob, True)  # w/ replacement, uniform
     _test3(prob, False)  # w/o replacement, uniform
@@ -671,14 +709,15 @@ def _test_sample_neighbors(hypersparse, prob):
             hg,
             {"user": [0, 1], "game": 0, "coin": 0},
             {"follow": 1, "play": 2, "liked-by": 0, "flips": -1},
-            replace=True,
+            replace=True, fused=True
         )
+        subg = recreate_graph(subg, hg)
         assert len(subg.ntypes) == 3
         assert len(subg.etypes) == 4
-        assert subg["follow"].num_edges() == 2
-        assert subg["play"].num_edges() == 2
-        assert subg["liked-by"].num_edges() == 0
-        assert subg["flips"].num_edges() == 4
+        assert subg["follow"].number_of_edges() == 2
+        assert subg["play"].number_of_edges() == 2
+        assert subg["liked-by"].number_of_edges() == 0
+        assert subg["flips"].number_of_edges() == 4
 
 
 def _test_sample_neighbors_outedge(hypersparse):
@@ -686,9 +725,10 @@ def _test_sample_neighbors_outedge(hypersparse):
 
     def _test1(p, replace):
         subg = dgl.sampling.sample_neighbors(
-            g, [0, 1], -1, prob=p, replace=replace, edge_dir="out"
+            g, [0, 1], -1, prob=p, replace=replace, edge_dir="out", fused=True
         )
-        assert subg.num_nodes() == g.num_nodes()
+        subg = recreate_graph(subg, g, "out")
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans, e_ans = g.out_edges([0, 1], form="all")
         if p is not None:
@@ -703,10 +743,11 @@ def _test_sample_neighbors_outedge(hypersparse):
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
-                g, [0, 1], 2, prob=p, replace=replace, edge_dir="out"
+                g, [0, 1], 2, prob=p, replace=replace, edge_dir="out", fused=True
             )
-            assert subg.num_nodes() == g.num_nodes()
-            assert subg.num_edges() == 4
+            subg = recreate_graph(subg, g, "out")
+            assert subg.number_of_nodes() == g.number_of_nodes()
+            assert subg.number_of_edges() == 4
             u, v = subg.edges()
             assert set(F.asnumpy(F.unique(u))) == {0, 1}
             assert F.array_equal(
@@ -729,9 +770,10 @@ def _test_sample_neighbors_outedge(hypersparse):
 
     def _test2(p, replace):  # fanout > #neighbors
         subg = dgl.sampling.sample_neighbors(
-            g, [0, 2], -1, prob=p, replace=replace, edge_dir="out"
+            g, [0, 2], -1, prob=p, replace=replace, edge_dir="out", fused=True
         )
-        assert subg.num_nodes() == g.num_nodes()
+        subg = recreate_graph(subg, g, "out")
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans, e_ans = g.out_edges([0, 2], form="all")
         if p is not None:
@@ -746,11 +788,12 @@ def _test_sample_neighbors_outedge(hypersparse):
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
-                g, [0, 2], 2, prob=p, replace=replace, edge_dir="out"
+                g, [0, 2], 2, prob=p, replace=replace, edge_dir="out", fused=True
             )
-            assert subg.num_nodes() == g.num_nodes()
+            subg = recreate_graph(subg, g, "out")
+            assert subg.number_of_nodes() == g.number_of_nodes()
             num_edges = 4 if replace else 3
-            assert subg.num_edges() == num_edges
+            assert subg.number_of_edges() == num_edges
             u, v = subg.edges()
             assert set(F.asnumpy(F.unique(u))) == {0, 2}
             assert F.array_equal(
@@ -777,14 +820,15 @@ def _test_sample_neighbors_outedge(hypersparse):
             -1,
             prob=p,
             replace=replace,
-            edge_dir="out",
+            edge_dir="out", fused=True
         )
+        subg = recreate_graph(subg, hg, "out")
         assert len(subg.ntypes) == 3
         assert len(subg.etypes) == 4
-        assert subg["follow"].num_edges() == 6 if p is None else 4
-        assert subg["play"].num_edges() == 1
-        assert subg["liked-by"].num_edges() == 4
-        assert subg["flips"].num_edges() == 0
+        assert subg["follow"].number_of_edges() == 6 if p is None else 4
+        assert subg["play"].number_of_edges() == 1
+        assert subg["liked-by"].number_of_edges() == 4
+        assert subg["flips"].number_of_edges() == 0
 
         for i in range(10):
             subg = dgl.sampling.sample_neighbors(
@@ -793,14 +837,15 @@ def _test_sample_neighbors_outedge(hypersparse):
                 2,
                 prob=p,
                 replace=replace,
-                edge_dir="out",
+                edge_dir="out", fused=True
             )
+            subg = recreate_graph(subg, hg, "out")
             assert len(subg.ntypes) == 3
             assert len(subg.etypes) == 4
-            assert subg["follow"].num_edges() == 4
-            assert subg["play"].num_edges() == 2 if replace else 1
-            assert subg["liked-by"].num_edges() == 4 if replace else 3
-            assert subg["flips"].num_edges() == 0
+            assert subg["follow"].number_of_edges() == 4
+            assert subg["play"].number_of_edges() == 2 if replace else 1
+            assert subg["liked-by"].number_of_edges() == 4 if replace else 3
+            assert subg["flips"].number_of_edges() == 0
 
     _test3(None, True)  # w/ replacement, uniform
     _test3(None, False)  # w/o replacement, uniform
@@ -813,7 +858,7 @@ def _test_sample_neighbors_topk(hypersparse):
 
     def _test1():
         subg = dgl.sampling.select_topk(g, -1, "weight", [0, 1])
-        assert subg.num_nodes() == g.num_nodes()
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans = subg.in_edges([0, 1])
         uv = set(zip(F.asnumpy(u), F.asnumpy(v)))
@@ -821,8 +866,8 @@ def _test_sample_neighbors_topk(hypersparse):
         assert uv == uv_ans
 
         subg = dgl.sampling.select_topk(g, 2, "weight", [0, 1])
-        assert subg.num_nodes() == g.num_nodes()
-        assert subg.num_edges() == 4
+        assert subg.number_of_nodes() == g.number_of_nodes()
+        assert subg.number_of_edges() == 4
         u, v = subg.edges()
         edge_set = set(zip(list(F.asnumpy(u)), list(F.asnumpy(v))))
         assert F.array_equal(g.edge_ids(u, v), subg.edata[dgl.EID])
@@ -832,7 +877,7 @@ def _test_sample_neighbors_topk(hypersparse):
 
     def _test2():  # k > #neighbors
         subg = dgl.sampling.select_topk(g, -1, "weight", [0, 2])
-        assert subg.num_nodes() == g.num_nodes()
+        assert subg.number_of_nodes() == g.number_of_nodes()
         u, v = subg.edges()
         u_ans, v_ans = subg.in_edges([0, 2])
         uv = set(zip(F.asnumpy(u), F.asnumpy(v)))
@@ -840,8 +885,8 @@ def _test_sample_neighbors_topk(hypersparse):
         assert uv == uv_ans
 
         subg = dgl.sampling.select_topk(g, 2, "weight", [0, 2])
-        assert subg.num_nodes() == g.num_nodes()
-        assert subg.num_edges() == 3
+        assert subg.number_of_nodes() == g.number_of_nodes()
+        assert subg.number_of_edges() == 3
         u, v = subg.edges()
         assert F.array_equal(g.edge_ids(u, v), subg.edata[dgl.EID])
         edge_set = set(zip(list(F.asnumpy(u)), list(F.asnumpy(v))))
@@ -873,7 +918,7 @@ def _test_sample_neighbors_topk(hypersparse):
             hg["liked-by"].edge_ids(u, v), subg["liked-by"].edata[dgl.EID]
         )
         assert edge_set == {(2, 0), (2, 1), (1, 0)}
-        assert subg["flips"].num_edges() == 0
+        assert subg["flips"].number_of_edges() == 0
 
     _test3()
 
@@ -1009,21 +1054,25 @@ def test_sample_neighbors_topk_outedge():
 def test_sample_neighbors_with_0deg():
     g = dgl.graph(([], []), num_nodes=5).to(F.ctx())
     sg = dgl.sampling.sample_neighbors(
-        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="in", replace=False
+        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="in", replace=False, fused=True
     )
-    assert sg.num_edges() == 0
+    sg = recreate_graph(sg, g)
+    assert sg.number_of_edges() == 0
     sg = dgl.sampling.sample_neighbors(
-        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="in", replace=True
+        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="in", replace=True, fused=True
     )
-    assert sg.num_edges() == 0
+    sg = recreate_graph(sg, g)
+    assert sg.number_of_edges() == 0
     sg = dgl.sampling.sample_neighbors(
-        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="out", replace=False
+        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="out", replace=False, fused=True
     )
-    assert sg.num_edges() == 0
+    sg = recreate_graph(sg, g, "out")
+    assert sg.number_of_edges() == 0
     sg = dgl.sampling.sample_neighbors(
-        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="out", replace=True
+        g, F.tensor([1, 2], dtype=F.int64), 2, edge_dir="out", replace=True, fused=True
     )
-    assert sg.num_edges() == 0
+    sg = recreate_graph(sg, g, "out")
+    assert sg.number_of_edges() == 0
 
 
 def create_test_graph(num_nodes, num_edges_per_node, bipartite=False):
@@ -1410,7 +1459,8 @@ def test_sample_neighbors_exclude_edges_heteroG(dtype):
         form="all", etype=("drug", "interacts", "drug")
     )
     excluded_d_i_d_edges = drug_i_drug_edges[EID][did_b_idx:did_e_idx]
-    sampled_drug_node = drug_i_drug_edges[V][nd_b_idx:nd_e_idx]
+    res,ind = np.unique(drug_i_drug_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+    sampled_drug_node = res[np.argsort(ind)]
     did_excluded_nodes_U = drug_i_drug_edges[U][did_b_idx:did_e_idx]
     did_excluded_nodes_V = drug_i_drug_edges[V][did_b_idx:did_e_idx]
 
@@ -1424,7 +1474,8 @@ def test_sample_neighbors_exclude_edges_heteroG(dtype):
     excluded_d_i_g_edges = drug_i_gene_edges[EID][dig_b_idx:dig_e_idx]
     dig_excluded_nodes_U = drug_i_gene_edges[U][dig_b_idx:dig_e_idx]
     dig_excluded_nodes_V = drug_i_gene_edges[V][dig_b_idx:dig_e_idx]
-    sampled_gene_node = drug_i_gene_edges[V][nd_b_idx:nd_e_idx]
+    res,ind = np.unique(drug_i_gene_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+    sampled_gene_node = res[np.argsort(ind)]
 
     nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
     nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
@@ -1436,7 +1487,8 @@ def test_sample_neighbors_exclude_edges_heteroG(dtype):
     excluded_d_t_d_edges = drug_t_dis_edges[EID][dtd_b_idx:dtd_e_idx]
     dtd_excluded_nodes_U = drug_t_dis_edges[U][dtd_b_idx:dtd_e_idx]
     dtd_excluded_nodes_V = drug_t_dis_edges[V][dtd_b_idx:dtd_e_idx]
-    sampled_disease_node = drug_t_dis_edges[V][nd_b_idx:nd_e_idx]
+    res,ind = np.unique(drug_t_dis_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+    sampled_disease_node = res[np.argsort(ind)]
     excluded_edges = {
         ("drug", "interacts", "drug"): excluded_d_i_d_edges,
         ("drug", "interacts", "gene"): excluded_d_i_g_edges,
@@ -1448,11 +1500,12 @@ def test_sample_neighbors_exclude_edges_heteroG(dtype):
         {
             "drug": sampled_drug_node,
             "gene": sampled_gene_node,
-            "disease": sampled_disease_node,
+            "disease": sampled_disease_node
         },
         sampled_amount,
-        exclude_edges=excluded_edges,
+        exclude_edges=excluded_edges, fused=True
     )
+    sg = recreate_graph(sg, g)
 
     assert not np.any(
         F.asnumpy(
@@ -1482,7 +1535,6 @@ def test_sample_neighbors_exclude_edges_heteroG(dtype):
         )
     )
 
-
 @pytest.mark.parametrize("dtype", ["int32", "int64"])
 def test_sample_neighbors_exclude_edges_homoG(dtype):
     u_nodes = F.zerocopy_from_numpy(
@@ -1504,17 +1556,227 @@ def test_sample_neighbors_exclude_edges_homoG(dtype):
     g_edges = g.all_edges(form="all")
     excluded_edges = g_edges[EID][b_idx:e_idx]
     sampled_node = g_edges[V][nd_b_idx:nd_e_idx]
+    res,ind = np.unique(g_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+    sampled_node = res[np.argsort(ind)]
     excluded_nodes_U = g_edges[U][b_idx:e_idx]
     excluded_nodes_V = g_edges[V][b_idx:e_idx]
 
     sg = dgl.sampling.sample_neighbors(
-        g, sampled_node, sampled_amount, exclude_edges=excluded_edges
+        g, sampled_node, sampled_amount, exclude_edges=excluded_edges, fused=True
     )
+    sg = recreate_graph(sg, g)
 
     assert not np.any(
         F.asnumpy(sg.has_edges_between(excluded_nodes_U, excluded_nodes_V))
     )
 
+
+@pytest.mark.parametrize("dtype", ["int64"])
+def test_sample_neighbors_fused_exclude_edges_heteroG(dtype):
+    for _ in range(100):
+        d_i_d_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_i_d_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_i_d_u_nodes.shape, dtype=dtype)
+        )
+        d_i_g_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_i_g_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_i_g_u_nodes.shape, dtype=dtype)
+        )
+        d_t_d_u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        d_t_d_v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=d_t_d_u_nodes.shape, dtype=dtype)
+        )
+
+        g = dgl.heterograph(
+            {
+                ("drug", "interacts", "drug"): (d_i_d_u_nodes, d_i_d_v_nodes),
+                ("drug", "interacts", "gene"): (d_i_g_u_nodes, d_i_g_v_nodes),
+                ("drug", "treats", "disease"): (d_t_d_u_nodes, d_t_d_v_nodes),
+            }
+        ).to(F.ctx())
+
+        (U, V, EID) = (0, 1, 2)
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        did_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        did_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        sampled_amount = np.random.randint(low=1, high=10, dtype=dtype)
+
+        drug_i_drug_edges = g.all_edges(
+            form="all", etype=("drug", "interacts", "drug")
+        )
+        excluded_d_i_d_edges = drug_i_drug_edges[EID][did_b_idx:did_e_idx]
+        res,ind = np.unique(drug_i_drug_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+        sampled_drug_node = res[np.argsort(ind)]
+        did_excluded_nodes_U = drug_i_drug_edges[U][did_b_idx:did_e_idx]
+        did_excluded_nodes_V = drug_i_drug_edges[V][did_b_idx:did_e_idx]
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        dig_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        dig_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        drug_i_gene_edges = g.all_edges(
+            form="all", etype=("drug", "interacts", "gene")
+        )
+        excluded_d_i_g_edges = drug_i_gene_edges[EID][dig_b_idx:dig_e_idx]
+        dig_excluded_nodes_U = drug_i_gene_edges[U][dig_b_idx:dig_e_idx]
+        dig_excluded_nodes_V = drug_i_gene_edges[V][dig_b_idx:dig_e_idx]
+        res,ind = np.unique(drug_i_gene_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+        sampled_gene_node = res[np.argsort(ind)]
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        dtd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        dtd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        drug_t_dis_edges = g.all_edges(
+            form="all", etype=("drug", "treats", "disease")
+        )
+        excluded_d_t_d_edges = drug_t_dis_edges[EID][dtd_b_idx:dtd_e_idx]
+        dtd_excluded_nodes_U = drug_t_dis_edges[U][dtd_b_idx:dtd_e_idx]
+        dtd_excluded_nodes_V = drug_t_dis_edges[V][dtd_b_idx:dtd_e_idx]
+        res,ind = np.unique(drug_t_dis_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+        sampled_disease_node = res[np.argsort(ind)]
+        excluded_edges = {
+            ("drug", "interacts", "drug"): excluded_d_i_d_edges,
+            ("drug", "interacts", "gene"): excluded_d_i_g_edges,
+            ("drug", "treats", "disease"): excluded_d_t_d_edges,
+        }
+
+        sg = dgl.sampling.sample_neighbors(
+            g,
+            {
+                "drug": sampled_drug_node,
+                "gene": sampled_gene_node,
+                "disease": sampled_disease_node
+            },
+            sampled_amount,
+            exclude_edges=excluded_edges,
+            fused = True
+        )
+        # sg = dgl.transforms.to_block(sg,
+        #     {
+        #         "drug": sampled_drug_node,
+        #         "gene": sampled_gene_node,
+        #         "disease": sampled_disease_node,
+        #     })
+
+        node_lists = [{"nodeU": did_excluded_nodes_U, "nodeV": did_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "drug"}, 
+                    {"nodeU": dig_excluded_nodes_U, "nodeV": dig_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "gene"},
+                    {"nodeU": dtd_excluded_nodes_U, "nodeV": dtd_excluded_nodes_V, "nodeTypeU": "drug", "nodeTypeV": "disease"}]
+
+        for node_list in node_lists:
+            nodes_mapped_U = []
+            nodes_mapped_V = []
+            for i in range(len(node_list["nodeU"])):
+                u = -1
+                v = -1
+                ntypeU = node_list["nodeTypeU"]
+                ntypeV = node_list["nodeTypeV"]
+                for j in range(len(sg.srcdata['_ID'][ntypeU])):
+                    if sg.srcdata['_ID'][ntypeU][j] == node_list["nodeU"][i]:
+                        u = j
+                        break
+                for j in range(len(sg.dstdata['_ID'][ntypeV])):
+                    if sg.dstdata['_ID'][ntypeV][j] == node_list["nodeV"][i]:
+                        v = j
+                        break
+                if u >= 0 and v >= 0:
+                    nodes_mapped_U.append(u)
+                    nodes_mapped_V.append(v)
+            node_list["nodeU"] = nodes_mapped_U
+            node_list["nodeV"] = nodes_mapped_V
+
+        did_excluded_nodes_U = node_lists[0]["nodeU"]
+        did_excluded_nodes_V = node_lists[0]["nodeV"]
+        dig_excluded_nodes_U = node_lists[1]["nodeU"]
+        dig_excluded_nodes_V = node_lists[1]["nodeV"]
+        dtd_excluded_nodes_U = node_lists[2]["nodeU"]
+        dtd_excluded_nodes_V = node_lists[2]["nodeV"]
+
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    did_excluded_nodes_U,
+                    did_excluded_nodes_V,
+                    etype=("drug", "interacts", "drug"),
+                )
+            )
+        )
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    dig_excluded_nodes_U,
+                    dig_excluded_nodes_V,
+                    etype=("drug", "interacts", "gene"),
+                )
+            )
+        )
+        assert not np.any(
+            F.asnumpy(
+                sg.has_edges_between(
+                    dtd_excluded_nodes_U,
+                    dtd_excluded_nodes_V,
+                    etype=("drug", "treats", "disease"),
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize("dtype", ["int64"])
+def test_sample_neighbors_fused_exclude_edges_homoG(dtype):
+    for _ in range(100):
+        u_nodes = F.zerocopy_from_numpy(
+            np.unique(np.random.randint(300, size=100, dtype=dtype))
+        )
+        v_nodes = F.zerocopy_from_numpy(
+            np.random.randint(25, size=u_nodes.shape, dtype=dtype)
+        )
+        g = dgl.graph((u_nodes, v_nodes)).to(F.ctx())
+        (U, V, EID) = (0, 1, 2)
+
+        nd_b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        nd_e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        b_idx = np.random.randint(low=1, high=24, dtype=dtype)
+        e_idx = np.random.randint(low=25, high=49, dtype=dtype)
+        sampled_amount = np.random.randint(low=1, high=10, dtype=dtype)
+
+        g_edges = g.all_edges(form="all")
+        excluded_edges = g_edges[EID][b_idx:e_idx]
+        res,ind = np.unique(g_edges[V][nd_b_idx:nd_e_idx], return_index=True)
+        sampled_node = res[np.argsort(ind)]
+        excluded_nodes_U = g_edges[U][b_idx:e_idx]
+        excluded_nodes_V = g_edges[V][b_idx:e_idx]
+
+        sg = dgl.sampling.sample_neighbors(
+            g, sampled_node, sampled_amount, exclude_edges=excluded_edges, fused=True
+        )
+
+        excluded_nodes_U_mapped = []
+        excluded_nodes_V_mapped = []
+
+        for i in range(len(excluded_nodes_U)):
+            u = -1
+            v = -1
+            for j in range(len(sg.srcdata['_ID'])):
+                if sg.srcdata['_ID'][j] == excluded_nodes_U[i]:
+                    u = j
+                    break
+            for j in range(len(sg.dstdata['_ID'])):
+                if sg.dstdata['_ID'][j] == excluded_nodes_V[i]:
+                    v = j
+                    break
+            if u >= 0 and v >= 0:
+                excluded_nodes_U_mapped.append(u)
+                excluded_nodes_V_mapped.append(v)
+
+        assert not np.any(F.asnumpy(sg.has_edges_between(excluded_nodes_U_mapped, excluded_nodes_V_mapped)))
 
 @pytest.mark.parametrize("dtype", ["int32", "int64"])
 def test_global_uniform_negative_sampling(dtype):

@@ -595,6 +595,83 @@ COOMatrix CSRRowWiseSampling(
   return ret;
 }
 
+template<typename IType, bool map_seed_nodes, bool backward>
+std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping, std::vector<IType>& new_seed_nodes,
+                                  int64_t num_samples, NDArray prob_or_mask, bool replace) {
+  std::pair<CSRMatrix,IdArray> ret;
+  if (IsNullArray(prob_or_mask)) {
+    ATEN_CSR_SWITCH_CUDA_UVA(
+        mat, rows, XPU, IdType, "CSRRowWiseSamplingUniformFused", {
+          ret = impl::CSRRowWiseSamplingUniformFused<XPU, IType, map_seed_nodes, backward>(
+                                                                  mat, rows, seed_mapping, new_seed_nodes, num_samples, replace);
+        });
+  } else {
+    // prob_or_mask is pinned and rows on GPU is valid
+    CHECK_VALID_CONTEXT(prob_or_mask, rows);
+    ATEN_CSR_SWITCH_CUDA_UVA(mat, rows, XPU, IdType, "CSRRowWiseSamplingFused", {
+      CHECK(!(prob_or_mask->dtype.bits == 8 && XPU == kDGLCUDA))
+          << "GPU sampling with masks is currently not supported yet.";
+      ATEN_FLOAT_INT8_UINT8_TYPE_SWITCH(
+          prob_or_mask->dtype, FloatType, "probability or mask", {
+            ret = impl::CSRRowWiseSamplingFused<XPU, IType, FloatType, map_seed_nodes, backward>(
+                                                                        mat, rows, seed_mapping, new_seed_nodes, num_samples, prob_or_mask, replace);
+          });
+    });
+  }
+  return ret;
+}
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int64_t, true, true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int64_t, false, true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int64_t, true, false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int64_t, false, false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int32_t, true, true>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int32_t, false, true>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int32_t,true, false>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&,
+                                                 int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<int32_t,false, false>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&,
+                                                 int64_t, NDArray, bool);
+
+std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward(
+                                  CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_samples, NDArray prob_or_mask,
+                                  bool replace) {
+  std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> ret;
+  if (IsNullArray(prob_or_mask)) {
+    ATEN_CSR_SWITCH_CUDA_UVA(
+        mat, rows, XPU, IdType, "CSRRowWiseSamplingUniformFusedBackward", {
+          ret = impl::CSRRowWiseSamplingUniformFusedBackward<XPU, IdType>(
+                                                                  mat, rows, mapping,num_samples, replace);
+        });
+  } else {
+    // prob_or_mask is pinned and rows on GPU is valid
+    CHECK_VALID_CONTEXT(prob_or_mask, rows);
+    ATEN_CSR_SWITCH_CUDA_UVA(mat, rows, XPU, IdType, "CSRRowWiseSamplingFusedBackward", {
+      CHECK(!(prob_or_mask->dtype.bits == 8 && XPU == kDGLCUDA))
+          << "GPU sampling with masks is currently not supported yet.";
+      ATEN_FLOAT_INT8_UINT8_TYPE_SWITCH(
+          prob_or_mask->dtype, FloatType, "probability or mask", {
+            ret = impl::CSRRowWiseSamplingFusedBackward<XPU, IdType, FloatType>(
+                                                                        mat, rows, mapping,num_samples, prob_or_mask, replace);
+          });
+    });
+  }
+  return ret;
+}
+  
+  
 COOMatrix CSRRowWisePerEtypeSampling(
     CSRMatrix mat, IdArray rows, const std::vector<int64_t>& eid2etype_offset,
     const std::vector<int64_t>& num_samples,

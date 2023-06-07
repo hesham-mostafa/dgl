@@ -2,6 +2,78 @@
 from ..base import EID, NID
 from ..transforms import to_block
 from .base import BlockSampler
+from .. import backend as F
+
+
+class NeighborSamplerFused(BlockSampler):
+    def __init__(self, fanouts, edge_dir='in', prob=None, mask=None, replace=False,
+                 prefetch_node_feats=None, prefetch_labels=None, prefetch_edge_feats=None,
+                 output_device=None):
+        super().__init__(prefetch_node_feats=prefetch_node_feats,
+                         prefetch_labels=prefetch_labels,
+                         prefetch_edge_feats=prefetch_edge_feats,
+                         output_device=output_device)
+        self.fanouts = fanouts
+        self.edge_dir = edge_dir
+        if mask is not None and prob is not None:
+            raise ValueError(
+                'Mask and probability arguments are mutually exclusive. '
+                'Consider multiplying the probability with the mask '
+                'to achieve the same goal.')
+        self.prob = prob or mask
+        self.replace = replace
+
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        output_nodes = seed_nodes
+        blocks = []
+        for fanout in reversed(self.fanouts):
+            block = g.sample_neighbors(
+                seed_nodes, fanout, edge_dir=self.edge_dir, prob=self.prob,
+                replace=self.replace, output_device=self.output_device, fused=True,
+                copy_edata=True, copy_ndata=True, exclude_edges=exclude_eids)
+
+            seed_nodes = block.srcdata[NID]
+            blocks.insert(0, block)
+
+        return seed_nodes, output_nodes, blocks
+    
+class MultiLayerFullNeighborSamplerFused(NeighborSamplerFused):
+    """Sampler that builds computational dependency of node representations by taking messages
+    from all neighbors for multilayer GNN.
+
+    This sampler will make every node gather messages from every single neighbor per edge type.
+
+    Parameters
+    ----------
+    n_layers : int
+        The number of GNN layers to sample.
+    kwargs :
+        Passed to :class:`dgl.dataloading.NeighborSampler`.
+
+    Examples
+    --------
+    To train a 3-layer GNN for node classification on a set of nodes ``train_nid`` on
+    a homogeneous graph where each node takes messages from all neighbors for the first,
+    second, and third layer respectively (assuming the backend is PyTorch):
+
+    >>> sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
+    >>> dataloader = dgl.dataloading.DataLoader(
+    ...     g, train_nid, sampler,
+    ...     batch_size=1024, shuffle=True, drop_last=False, num_workers=4)
+    >>> for input_nodes, output_nodes, blocks in dataloader:
+    ...     train_on(blocks)
+
+    Notes
+    -----
+    For the concept of MFGs, please refer to
+    :ref:`User Guide Section 6 <guide-minibatch>` and
+    :doc:`Minibatch Training Tutorials <tutorials/large/L0_neighbor_sampling_overview>`.
+    """
+
+    def __init__(self, num_layers, **kwargs):
+        super().__init__([-1] * num_layers, **kwargs)
+
 
 
 class NeighborSampler(BlockSampler):
@@ -138,24 +210,35 @@ class NeighborSampler(BlockSampler):
         self.prob = prob or mask
         self.replace = replace
 
+
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         output_nodes = seed_nodes
         blocks = []
-        for fanout in reversed(self.fanouts):
-            frontier = g.sample_neighbors(
-                seed_nodes,
-                fanout,
-                edge_dir=self.edge_dir,
-                prob=self.prob,
-                replace=self.replace,
-                output_device=self.output_device,
-                exclude_edges=exclude_eids,
-            )
-            eid = frontier.edata[EID]
-            block = to_block(frontier, seed_nodes)
-            block.edata[EID] = eid
-            seed_nodes = block.srcdata[NID]
-            blocks.insert(0, block)
+        if F.device_type(g.device) == "cpu":
+            for fanout in reversed(self.fanouts):
+                block = g.sample_neighbors(
+                    seed_nodes, fanout, edge_dir=self.edge_dir, prob=self.prob,
+                    replace=self.replace, output_device=self.output_device, fused=True,
+                    copy_edata=True, copy_ndata=True, exclude_edges=exclude_eids)
+
+                seed_nodes = block.srcdata[NID]
+                blocks.insert(0, block)
+        else:
+            for fanout in reversed(self.fanouts):
+                frontier = g.sample_neighbors(
+                    seed_nodes,
+                    fanout,
+                    edge_dir=self.edge_dir,
+                    prob=self.prob,
+                    replace=self.replace,
+                    output_device=self.output_device,
+                    exclude_edges=exclude_eids,
+                )
+                eid = frontier.edata[EID]
+                block = to_block(frontier, seed_nodes)
+                block.edata[EID] = eid
+                seed_nodes = block.srcdata[NID]
+                blocks.insert(0, block)
 
         return seed_nodes, output_nodes, blocks
 

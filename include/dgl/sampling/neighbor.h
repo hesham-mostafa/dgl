@@ -14,6 +14,22 @@
 namespace dgl {
 namespace sampling {
 
+
+template <typename IdType, bool backward>
+std::tuple<HeteroGraphPtr, std::vector<IdArray>, std::vector<IdArray>> SampleNeighborsFused(
+    const HeteroGraphPtr hg, const std::vector<IdArray>& nodes, std::vector<IdArray>& mapping,
+    const std::vector<int64_t>& fanouts, EdgeDir dir,
+    const std::vector<NDArray>& prob_or_mask,
+    const std::vector<IdArray>& exclude_edges, bool replace);
+
+
+HeteroSubgraph SampleNeighborsFusedBackward(
+    const HeteroGraphPtr hg, const std::vector<IdArray>& nodes,
+    const std::vector<int64_t>& fanouts, EdgeDir dir,
+    const std::vector<FloatArray>& probability,
+    const std::vector<IdArray>& exclude_edges, bool replace = true);
+  
+  
 /**
  * @brief Sample from the neighbors of the given nodes and return the sampled
  * edges as a graph.

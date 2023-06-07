@@ -9,6 +9,10 @@
 #include <dgl/array.h>
 #include <dgl/runtime/parallel_for.h>
 #include <dmlc/omp.h>
+#include <dmlc/logging.h>
+#include <x86intrin.h>
+#include <fstream>
+
 
 #include <algorithm>
 #include <functional>
@@ -94,6 +98,1278 @@ using EtypeRangePickFn = std::function<void(
     const std::vector<IdxType>& et_idx, const std::vector<IdxType>& et_eid,
     const IdxType* eid, IdxType* out_idx)>;
 
+
+
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+template <typename IdxType>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedCritical(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  //uint64_t startTick, endTick;
+  //startTick = __rdtsc();
+  
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+  
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+
+  int64_t last_compact_index = num_rows;
+
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+
+    for (int64_t i = start_i; i < end_i; ++i) 
+      {
+	const IdxType rid = rows_data[i];
+	mapping_data[rid] = i;
+      }
+	
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+	
+    const IdxType thread_offset = global_prefix[thread_id];
+    IdxType current_mapping;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+      
+      
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+        const IdxType picked = picked_idata[row_offset + j];
+	const IdxType src_col =indices[picked];
+#pragma omp atomic read	
+	current_mapping = mapping_data[src_col];
+	if(current_mapping == -1)
+	  {
+#pragma omp critical //(cdata_update) hint(omp_sync_hint_uncontended)
+	    {
+	      current_mapping = mapping_data[src_col];	      
+	      if(current_mapping == -1)
+		{
+		  current_mapping = last_compact_index;
+		  last_compact_index++;
+#pragma omp atomic write
+		  mapping_data[src_col] = current_mapping;
+		}
+	    }
+
+	  }
+	picked_cdata[row_offset + j] = current_mapping ;	
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+
+  
+  // IdxType* cdata = picked_col.Ptr<IdxType>();  
+  // for(int64_t i = 0; i < picked_col->shape[0];++i)
+  //   {
+  //     IdxType current_mapping = mapping_data[cdata[i]];
+  //     if(current_mapping == -1)
+  // 	{
+  //         src_nodes.push_back(cdata[i]);
+  //         //          d_file<<cdata[i]<<std::endl;
+  // 	  mapping_data[cdata[i]] = last_compact_index;
+  // 	  cdata[i] = last_compact_index;
+  // 	  ++last_compact_index;
+  // 	}
+  //     else
+  // 	cdata[i] = current_mapping;
+  //   }
+  //  endTick = __rdtsc();
+  //  for(auto & z : src_nodes)
+  // d_file<<z<<std::endl;
+  
+  //  LOG(INFO) << "fused pick = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(
+      num_rows, last_compact_index,
+      block_csr_indptr,picked_col,picked_idx),  NDArray::FromVector(src_nodes));
+}
+  
+
+
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+template <typename IdxType>
+std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWisePickFusedBackward(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  uint64_t startTick, endTick;
+  startTick = __rdtsc();
+  
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+  
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+  std::vector<IdxType> src_nodes_num_conns(num_rows);  
+
+  
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+	
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      src_nodes_num_conns[i] = 0;
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+      mapping_data[rid] = i;
+      
+      
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+        const IdxType picked = picked_idata[row_offset + j];
+        picked_cdata[row_offset + j] = indices[picked];
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+  
+  int64_t last_compact_index = num_rows;
+  IdxType* cdata = picked_col.Ptr<IdxType>();  
+  IdxType current_row = 0;
+  std::vector<std::vector<IdxType>> csr_data_backward(num_rows);  
+  
+  for(int64_t i = 0; i < picked_col->shape[0];++i)
+    {
+      while(i >= block_csr_indptr_data[current_row+1])
+	++current_row;
+      IdxType current_mapping = mapping_data[cdata[i]];
+      if(current_mapping == -1)
+	{
+          src_nodes.push_back(cdata[i]);
+	  src_nodes_num_conns.push_back(1);	  
+	  mapping_data[cdata[i]] = last_compact_index;
+	  cdata[i] = last_compact_index;
+	  ++last_compact_index;
+	  //csr_data_backward.push_back(std::vector<IdxType>{current_row});
+	}
+      else
+	{
+	  src_nodes_num_conns[current_mapping] += 1;	  
+	  cdata[i] = current_mapping;
+	  //	  csr_data_backward[current_mapping].push_back(current_row);
+	}
+    }
+  endTick = __rdtsc();
+  //  for(auto & z : src_nodes)
+  // d_file<<z<<std::endl;
+  
+  LOG(INFO) << "fused pick backward intermediate = " << (endTick - startTick);
+
+  return std::make_pair(std::make_pair(CSRMatrix(
+						 num_rows, last_compact_index,
+						 block_csr_indptr,picked_col,picked_idx),
+				       CSRMatrix(
+						 num_rows, last_compact_index,
+						 block_csr_indptr,picked_col,picked_idx)),
+			NDArray::FromVector(src_nodes));
+
+  
+  const int64_t num_rows_backward =  last_compact_index;
+  const int64_t num_cols_backward =  num_rows;
+  IdArray picked_col_backward = IdArray::Empty({picked_col->shape[0]}, idtype, ctx);
+  IdArray block_csr_indptr_backward = IdArray::Empty({num_rows_backward + 1}, idtype, ctx);      
+
+  IdxType* picked_cdata_backward = picked_col_backward.Ptr<IdxType>();  
+  IdxType *block_csr_indptr_data_backward = block_csr_indptr_backward.Ptr<IdxType>();
+
+  
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+    const int64_t start_i =
+        thread_id * (num_rows_backward / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows_backward % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows_backward / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows_backward % num_threads);
+    const int64_t num_local = end_i - start_i;
+    
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType len = csr_data_backward[i].size();
+
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    //reuse and overwrite the global_prefix
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+    }
+#pragma omp barrier
+      const IdxType thread_offset = global_prefix[thread_id];
+      
+      for (int64_t i = start_i; i < end_i; ++i) {
+	const int64_t local_i = i - start_i;
+	block_csr_indptr_data_backward[i] = local_prefix[local_i] + thread_offset;
+	memcpy(picked_cdata_backward + local_prefix[local_i] + thread_offset,
+	       &csr_data_backward[i][0],sizeof(IdxType) * csr_data_backward[i].size());
+      }
+  }
+
+  block_csr_indptr_data_backward[num_rows_backward] = global_prefix.back();
+
+  endTick = __rdtsc();
+  //  for(auto & z : src_nodes)
+  // d_file<<z<<std::endl;
+  
+  LOG(INFO) << "fused pick backward final = " << (endTick - startTick);
+  
+  return std::make_pair(std::make_pair(CSRMatrix(
+						 num_rows, last_compact_index,
+						 block_csr_indptr,picked_col,picked_idx),
+				       CSRMatrix(
+						 num_rows_backward, num_cols_backward,
+						 block_csr_indptr_backward,picked_col_backward,
+						 picked_idx)),
+			NDArray::FromVector(src_nodes));
+}
+
+  
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+template <typename IdxType>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedOrig(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  uint64_t startTick, endTick;
+  startTick = __rdtsc();
+  
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+  
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+
+  
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+	
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+      mapping_data[rid] = i;
+      
+      
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+        const IdxType picked = picked_idata[row_offset + j];
+        picked_cdata[row_offset + j] = indices[picked];
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+  endTick = __rdtsc();
+  LOG(INFO) << "fused pick intermediate = " << (endTick - startTick);
+  
+  int64_t last_compact_index = num_rows;
+  IdxType* cdata = picked_col.Ptr<IdxType>();  
+
+  for(int64_t i = 0; i < picked_col->shape[0];++i)
+    {
+      IdxType current_mapping = mapping_data[cdata[i]];
+      if(current_mapping == -1)
+	{
+          src_nodes.push_back(cdata[i]);
+          //          d_file<<cdata[i]<<std::endl;
+	  mapping_data[cdata[i]] = last_compact_index;
+	  cdata[i] = last_compact_index;
+	  ++last_compact_index;
+	}
+      else
+	cdata[i] = current_mapping;
+    }
+  endTick = __rdtsc();
+  
+  LOG(INFO) << "fused pick = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(
+      num_rows, last_compact_index,
+      block_csr_indptr,picked_col,picked_idx),  NDArray::FromVector(src_nodes));
+}
+
+
+
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+template <typename IdxType>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedParallel(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  uint64_t startTick, endTick;
+  startTick = __rdtsc();
+  
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  volatile IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+  
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+  int64_t last_compact_index = num_rows;
+  
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      mapping_data[rid] = i;
+      
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+
+      src_nodes.resize(picked_col->shape[0]);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+	
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+      
+      
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+        const IdxType picked = picked_idata[row_offset + j];
+        const IdxType picked_idx = indices[picked];         
+        IdxType current_mapping = __sync_val_compare_and_swap(&mapping_data[picked_idx], -1, -2);      
+        if(current_mapping == -1)
+          {
+            current_mapping = __sync_fetch_and_add (&last_compact_index,1);
+            bool success = __sync_bool_compare_and_swap(&mapping_data[picked_idx], -2, current_mapping);
+	    if(!success)
+	      LOG(INFO) << "Logic error "<<last_compact_index;
+	    src_nodes[current_mapping] = picked_idx;
+          }
+        else if(current_mapping == -2)
+          {
+            do {
+              current_mapping = mapping_data[picked_idx];
+	      //	      LOG(INFO) << "waiting for current mapping";
+            }while(current_mapping == -2);
+		   //	    if(guard >= 2000000)
+		   //	      LOG(INFO) << "guard execeeded "<<mapping_data[picked_idx]<<" "<<current_mapping;
+          }
+            
+            
+        picked_cdata[row_offset + j] = current_mapping;
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+  src_nodes.resize(last_compact_index);
+  endTick = __rdtsc();
+  
+  LOG(INFO) << "fused pick parallel = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(
+      num_rows, last_compact_index,
+      block_csr_indptr,picked_col,picked_idx),  NDArray::FromVector(src_nodes));
+}
+  
+
+
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+//three steps
+template <typename IdxType, bool map_seed_nodes, bool backward>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
+                              std::vector<IdxType>& new_seed_nodes, int64_t num_picks, 
+                              bool replace, PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  //  uint64_t startTick, endTick;
+  //  startTick = __rdtsc();
+
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+  IdxType* seed_mapping_data = seed_mapping.Ptr<IdxType>();
+
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx, picked_coo_rows;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+ 
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      if constexpr (map_seed_nodes)
+        seed_mapping_data[rid] = i;
+
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      if constexpr (backward)
+        picked_coo_rows = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+    IdxType* picked_rows;
+    if constexpr (backward)
+      picked_rows = picked_coo_rows.Ptr<IdxType>();
+
+
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+     
+     
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+
+        const IdxType picked = picked_idata[row_offset + j];
+        picked_cdata[row_offset + j] = indices[picked];
+        picked_idata[row_offset + j] = data ? data[picked] : picked; 
+        if constexpr (backward)
+          picked_rows[row_offset + j] = i;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+
+
+  //  endTick = __rdtsc();
+  //  LOG(INFO) << "fused pick three step intermediate = " << (endTick - startTick);
+  
+  const IdxType num_cols = picked_col->shape[0];
+  if constexpr (map_seed_nodes) {
+    new_seed_nodes.resize(num_rows);
+    memcpy(new_seed_nodes.data(), rows_data, sizeof(IdxType)*num_rows);
+  }
+  //  endTick = __rdtsc();
+  
+  //  LOG(INFO) << "fused pick three step = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(num_rows, num_cols,
+      block_csr_indptr,picked_col,picked_idx), picked_coo_rows);
+}
+
+  
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+//Two step
+template <typename IdxType>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedTwoStep(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  uint64_t startTick, endTick;
+  startTick = __rdtsc();
+ 
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  volatile IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+ 
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+  int64_t last_compact_index = num_rows;
+ 
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      mapping_data[rid] = i;
+     
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+     
+     
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+
+        const IdxType picked = picked_idata[row_offset + j];
+        picked_cdata[row_offset + j] = indices[picked];
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+
+  IdxType* cdata = picked_col.Ptr<IdxType>();  
+
+  endTick = __rdtsc();
+  LOG(INFO) << "fused pick two step intermediate = " << (endTick - startTick);
+  
+  const int64_t num_cols = picked_col->shape[0];
+  src_nodes.resize(num_cols);
+ 
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads_col = runtime::compute_num_threads(0, num_cols, 1);
+  std::vector<int64_t> global_prefix_col(num_threads + 1, 0);
+
+  
+#pragma omp parallel num_threads(num_threads_col)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_cols / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_cols % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_cols / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_cols % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_cols);
+    
+    const int64_t num_local = end_i - start_i;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      IdxType picked_idx = cdata[i];
+      IdxType current_mapping = __sync_val_compare_and_swap(&mapping_data[picked_idx], -1, -2);      
+      if(current_mapping == -1)
+        {
+          current_mapping = __sync_fetch_and_add (&last_compact_index,1);
+          __sync_bool_compare_and_swap(&mapping_data[picked_idx], -2, current_mapping);      
+	  src_nodes[current_mapping] = picked_idx;	  
+        }
+      else if(current_mapping == -2)
+        {
+          do {
+            current_mapping = mapping_data[picked_idx];
+          }while(current_mapping == -2);
+        }
+      cdata[i] = current_mapping;
+    }
+  }
+  
+  src_nodes.resize(last_compact_index);
+  endTick = __rdtsc();
+  
+  LOG(INFO) << "fused pick two step = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(
+      num_rows, last_compact_index,
+      block_csr_indptr,picked_col,picked_idx),  NDArray::FromVector(src_nodes));
+}
+  
+// Template for picking non-zero values row-wise. The implementation utilizes
+// OpenMP parallelization on rows because each row performs computation
+// independently.
+template <typename IdxType>
+std::pair<CSRMatrix,IdArray> CSRRowWisePickFusedMap(
+                              CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_picks, bool replace,
+                              PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
+  using namespace aten;
+  //uint64_t startTick, endTick;
+  //startTick = __rdtsc();
+  
+  const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
+  const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
+  const IdxType* data =
+      CSRHasData(mat) ? static_cast<IdxType*>(mat.data->data) : nullptr;
+  const IdxType* rows_data = static_cast<IdxType*>(rows->data);
+  const int64_t num_rows = rows->shape[0];
+  const auto& ctx = mat.indptr->ctx;
+  const auto& idtype = mat.indptr->dtype;
+
+
+  IdxType* mapping_data = mapping.Ptr<IdxType>();
+  //  std::ofstream d_file;
+  //  d_file.open("/home/hesham/fused_debug");
+
+  
+  // To leverage OMP parallelization, we create two arrays to store
+  // picked src and dst indices. Each array is of length num_rows * num_picks.
+  // For rows whose nnz < num_picks, the indices are padded with -1.
+  //
+  // We check whether all the given rows
+  // have at least num_picks number of nnz when replace is false.
+  //
+  // If the check holds, remove -1 elements by remove_if operation, which simply
+  // moves valid elements to the head of arrays and create a view of the
+  // original array. The implementation consumes a little extra memory than the
+  // actual requirement.
+  //
+  // Otherwise, directly use the row and col arrays to construct the result COO
+  // matrix.
+  //
+  // [02/29/2020 update]: OMP is disabled for now since batch-wise parallelism
+  // is more
+  //   significant. (minjie)
+
+  // Do not use omp_get_max_threads() since that doesn't work for compiling
+  // without OpenMP.
+  const int num_threads = runtime::compute_num_threads(0, num_rows, 1);
+  std::vector<int64_t> global_prefix(num_threads + 1, 0);
+
+  // TODO(BarclayII) Using OMP parallel directly instead of using
+  // runtime::parallel_for does not handle exceptions well (directly aborts when
+  // an exception pops up). It runs faster though because there is less
+  // scheduling.  Need to handle exceptions better.
+  IdArray  picked_col, picked_idx;
+
+  IdArray block_csr_indptr = IdArray::Empty({num_rows + 1}, idtype, ctx);      
+  IdxType *block_csr_indptr_data = block_csr_indptr.Ptr<IdxType>();
+  std::vector<IdxType> src_nodes(num_rows);
+  std::unordered_map<IdxType,IdxType> renumbering_map;
+  for(int64_t i=0;i < num_rows;++i)
+    renumbering_map[rows_data[i]] = i+1;
+  
+#pragma omp parallel num_threads(num_threads)
+  {
+    const int thread_id = omp_get_thread_num();
+
+    const int64_t start_i =
+        thread_id * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id), num_rows % num_threads);
+    const int64_t end_i =
+        (thread_id + 1) * (num_rows / num_threads) +
+        std::min(static_cast<int64_t>(thread_id + 1), num_rows % num_threads);
+    assert(thread_id + 1 < num_threads || end_i == num_rows);
+
+    const int64_t num_local = end_i - start_i;
+
+    // make sure we don't have to pay initialization cost
+    std::unique_ptr<int64_t[]> local_prefix(new int64_t[num_local + 1]);
+    local_prefix[0] = 0;
+    for (int64_t i = start_i; i < end_i; ++i) {
+      // build prefix-sum
+      const int64_t local_i = i - start_i;
+      const IdxType rid = rows_data[i];
+      IdxType len = num_picks_fn(
+          rid, indptr[rid], indptr[rid + 1] - indptr[rid], indices, data);
+      local_prefix[local_i + 1] = local_prefix[local_i] + len;
+    }
+    global_prefix[thread_id + 1] = local_prefix[num_local];
+
+#pragma omp barrier
+#pragma omp master
+    {
+      for (int t = 0; t < num_threads; ++t) {
+        global_prefix[t + 1] += global_prefix[t];
+      }
+      picked_col = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+      picked_idx = IdArray::Empty({global_prefix[num_threads]}, idtype, ctx);
+    }
+
+#pragma omp barrier
+    IdxType* picked_cdata = picked_col.Ptr<IdxType>();
+    IdxType* picked_idata = picked_idx.Ptr<IdxType>();
+
+	
+    const IdxType thread_offset = global_prefix[thread_id];
+
+    for (int64_t i = start_i; i < end_i; ++i) {
+      const IdxType rid = rows_data[i];
+      src_nodes[i] = rid;
+      const int64_t local_i = i - start_i;
+      block_csr_indptr_data[i] = local_prefix[local_i] + thread_offset;
+      
+      
+      const IdxType off = indptr[rid];
+      const IdxType len = indptr[rid + 1] - off;
+      if (len == 0) continue;
+
+
+      const int64_t row_offset = local_prefix[local_i] + thread_offset;
+      const int64_t num_picks = local_prefix[local_i + 1] + thread_offset - row_offset;
+
+      pick_fn(
+          rid, off, len, num_picks, indices, data, picked_idata + row_offset);
+      for (int64_t j = 0; j < num_picks; ++j) {
+        const IdxType picked = picked_idata[row_offset + j];
+        picked_cdata[row_offset + j] = indices[picked];
+        picked_idata[row_offset + j] = data ? data[picked] : picked;
+      }
+    }
+  }
+  block_csr_indptr_data[num_rows] = global_prefix.back();
+
+  
+  int64_t last_compact_index = num_rows;
+  IdxType* cdata = picked_col.Ptr<IdxType>();  
+
+  for(int64_t i = 0; i < picked_col->shape[0];++i)
+    {
+      IdxType current_mapping = renumbering_map[cdata[i]] - 1 ;
+      if(current_mapping == -1)
+	{
+          src_nodes.push_back(cdata[i]);
+	  renumbering_map[cdata[i]] = last_compact_index+1;
+	  cdata[i] = last_compact_index;
+	  ++last_compact_index;
+	}
+      else
+	cdata[i] = current_mapping;
+    }
+  //  endTick = __rdtsc();
+  //  for(auto & z : src_nodes)
+  // d_file<<z<<std::endl;
+  
+  //  LOG(INFO) << "fused pick = " << (endTick - startTick);
+
+  return std::make_pair(CSRMatrix(
+      num_rows, last_compact_index,
+      block_csr_indptr,picked_col,picked_idx),  NDArray::FromVector(src_nodes));
+}
+
+  
+
+
+
+
+
 // Template for picking non-zero values row-wise. The implementation utilizes
 // OpenMP parallelization on rows because each row performs computation
 // independently.
@@ -102,6 +1378,9 @@ COOMatrix CSRRowWisePick(
     CSRMatrix mat, IdArray rows, int64_t num_picks, bool replace,
     PickFn<IdxType> pick_fn, NumPicksFn<IdxType> num_picks_fn) {
   using namespace aten;
+  //  uint64_t startTick, endTick;
+  //  startTick = __rdtsc();
+
   const IdxType* indptr = static_cast<IdxType*>(mat.indptr->data);
   const IdxType* indices = static_cast<IdxType*>(mat.indices->data);
   const IdxType* data =

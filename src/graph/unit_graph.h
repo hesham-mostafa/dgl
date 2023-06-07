@@ -170,6 +170,22 @@ class UnitGraph : public BaseHeteroGraph {
     IdArray col = IdArray::Empty({0}, dtype, ctx);
     return CreateFromCOO(num_vtypes, num_src, num_dst, row, col);
   }
+  /**
+   * @brief constructor
+   * @param num_vtypes number of vertex types (1 or 2)
+   * @param metagraph metagraph
+   * @param in_csr in edge csr
+   * @param out_csr out edge csr
+   * @param coo coo
+   * @param has_in_csr whether in_csr is valid
+   * @param has_out_csr whether out_csr is valid
+   * @param has_coo whether coo is valid
+   */
+  static HeteroGraphPtr CreateUnitGraphFrom(
+      int num_vtypes, const aten::CSRMatrix& in_csr,
+      const aten::CSRMatrix& out_csr, const aten::COOMatrix& coo,
+      bool has_in_csr, bool has_out_csr, bool has_coo,
+      dgl_format_code_t formats = ALL_CODE);
 
   /** @brief Create a graph from COO arrays */
   static HeteroGraphPtr CreateFromCOO(
@@ -339,22 +355,6 @@ class UnitGraph : public BaseHeteroGraph {
       GraphPtr metagraph, CSRPtr in_csr, CSRPtr out_csr, COOPtr coo,
       dgl_format_code_t formats = ALL_CODE);
 
-  /**
-   * @brief constructor
-   * @param num_vtypes number of vertex types (1 or 2)
-   * @param metagraph metagraph
-   * @param in_csr in edge csr
-   * @param out_csr out edge csr
-   * @param coo coo
-   * @param has_in_csr whether in_csr is valid
-   * @param has_out_csr whether out_csr is valid
-   * @param has_coo whether coo is valid
-   */
-  static HeteroGraphPtr CreateUnitGraphFrom(
-      int num_vtypes, const aten::CSRMatrix& in_csr,
-      const aten::CSRMatrix& out_csr, const aten::COOMatrix& coo,
-      bool has_in_csr, bool has_out_csr, bool has_coo,
-      dgl_format_code_t formats = ALL_CODE);
 
   /** @return Return any existing format. */
   HeteroGraphPtr GetAny() const;

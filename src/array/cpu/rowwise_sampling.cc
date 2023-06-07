@@ -225,6 +225,123 @@ template COOMatrix CSRRowWiseSampling<kDGLCPU, int32_t, uint8_t>(
 template COOMatrix CSRRowWiseSampling<kDGLCPU, int64_t, uint8_t>(
     CSRMatrix, IdArray, int64_t, NDArray, bool);
 
+
+template <DGLDeviceType XPU, typename IdxType, typename DType, bool map_seed_nodes, bool backward>
+std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
+                                  std::vector<IdxType>& new_seed_nodes, int64_t num_samples, NDArray prob_or_mask,
+    bool replace) {
+  // If num_samples is -1, select all neighbors without replacement.
+  replace = (replace && num_samples != -1);
+  CHECK(prob_or_mask.defined());
+  auto num_picks_fn =
+      GetSamplingNumPicksFn<IdxType, DType>(num_samples, prob_or_mask, replace);
+  auto pick_fn =
+      GetSamplingPickFn<IdxType, DType>(num_samples, prob_or_mask, replace);
+  return CSRRowWisePickFused<IdxType, map_seed_nodes, backward>(mat, rows, seed_mapping, new_seed_nodes, num_samples, replace, pick_fn, num_picks_fn);
+}
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, true, true>(
+    CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, true, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, false, true>(
+    CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, false, true>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, true, false>(
+    CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, true, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, float, false, false>(
+    CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, float, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, double, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, double, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, int8_t, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, int8_t, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int32_t, uint8_t, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int32_t>&, int64_t, NDArray, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingFused<kDGLCPU, int64_t, uint8_t, false, false>(
+    CSRMatrix,IdArray, IdArray, std::vector<int64_t>&, int64_t, NDArray, bool);
+
+
+template <DGLDeviceType XPU, typename IdxType, typename DType>
+std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward(
+                                  CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_samples, NDArray prob_or_mask,
+    bool replace) {
+  // If num_samples is -1, select all neighbors without replacement.
+  replace = (replace && num_samples != -1);
+  CHECK(prob_or_mask.defined());
+  auto num_picks_fn =
+      GetSamplingNumPicksFn<IdxType, DType>(num_samples, prob_or_mask, replace);
+  auto pick_fn =
+      GetSamplingPickFn<IdxType, DType>(num_samples, prob_or_mask, replace);
+  return CSRRowWisePickFusedBackward(mat, rows, mapping,num_samples, replace, pick_fn, num_picks_fn);
+}
+
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int32_t, float>(
+    CSRMatrix, IdArray,IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int64_t, float>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int32_t, double>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int64_t, double>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int32_t, int8_t>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int64_t, int8_t>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int32_t, uint8_t>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingFusedBackward<kDGLCPU, int64_t, uint8_t>(
+    CSRMatrix,IdArray, IdArray, int64_t, NDArray, bool);
+
+  
+  
 template <DGLDeviceType XPU, typename IdxType, typename DType>
 COOMatrix CSRRowWisePerEtypeSampling(
     CSRMatrix mat, IdArray rows, const std::vector<int64_t>& eid2etype_offset,
@@ -283,6 +400,48 @@ template COOMatrix CSRRowWiseSamplingUniform<kDGLCPU, int32_t>(
 template COOMatrix CSRRowWiseSamplingUniform<kDGLCPU, int64_t>(
     CSRMatrix, IdArray, int64_t, bool);
 
+
+
+template <DGLDeviceType XPU, typename IdxType, bool map_seed_nodes, bool backward>
+std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused(CSRMatrix mat, IdArray rows, IdArray seed_mapping,
+                                         std::vector<IdxType>& new_seed_nodes, int64_t num_samples, bool replace) {
+  // If num_samples is -1, select all neighbors without replacement.
+  replace = (replace && num_samples != -1);
+  auto num_picks_fn =
+      GetSamplingUniformNumPicksFn<IdxType>(num_samples, replace);
+  auto pick_fn = GetSamplingUniformPickFn<IdxType>(num_samples, replace);
+  return CSRRowWisePickFused<IdxType, map_seed_nodes, backward>(mat, rows, seed_mapping, new_seed_nodes, num_samples, replace, pick_fn, num_picks_fn);
+}
+
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, true, true>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray>  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, true, true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, false, true>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray>  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, false, true>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, true, false>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray>  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, true, false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray> CSRRowWiseSamplingUniformFused<kDGLCPU, int32_t, false, false>(CSRMatrix, IdArray, IdArray, std::vector<int32_t>&, int64_t, bool);
+template std::pair<CSRMatrix,IdArray>  CSRRowWiseSamplingUniformFused<kDGLCPU, int64_t, false, false>(CSRMatrix, IdArray, IdArray, std::vector<int64_t>&, int64_t, bool);
+
+
+
+template <DGLDeviceType XPU, typename IdxType>
+std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingUniformFusedBackward(
+                                                            CSRMatrix mat, IdArray rows,IdArray mapping, int64_t num_samples, bool replace) {
+  // If num_samples is -1, select all neighbors without replacement.
+  replace = (replace && num_samples != -1);
+  auto num_picks_fn =
+      GetSamplingUniformNumPicksFn<IdxType>(num_samples, replace);
+  auto pick_fn = GetSamplingUniformPickFn<IdxType>(num_samples, replace);
+  return CSRRowWisePickFusedBackward(mat, rows, mapping,num_samples, replace, pick_fn, num_picks_fn);
+}
+
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray> CSRRowWiseSamplingUniformFusedBackward<kDGLCPU, int32_t>(
+                                                                                       CSRMatrix, IdArray,IdArray, int64_t, bool);
+template std::pair<std::pair<CSRMatrix,CSRMatrix>,IdArray>  CSRRowWiseSamplingUniformFusedBackward<kDGLCPU, int64_t>(
+                                                                                        CSRMatrix, IdArray, IdArray,int64_t, bool);
+  
+  
+  
 template <DGLDeviceType XPU, typename IdxType>
 COOMatrix CSRRowWisePerEtypeSamplingUniform(
     CSRMatrix mat, IdArray rows, const std::vector<int64_t>& eid2etype_offset,
