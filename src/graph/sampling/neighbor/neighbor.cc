@@ -509,18 +509,24 @@ std::tuple<HeteroGraphPtr, std::vector<IdArray>, std::vector<IdArray>> SampleNei
       CSRMatrix graph = sampled_graphs[etype];
       if (dir == EdgeDir::kOut) {
         if constexpr (backward) {
-          subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, graph, CSRMatrix(nodes[src_vtype]->shape[0], new_nodes_vec[dst_vtype].size(), graph.indptr, graph.indices), COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], sampled_coo_rows[etype], graph.indices), false, true, true, ALL_CODE);
+          subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, 
+                            CSRMatrix(), 
+                            CSRMatrix(nodes[src_vtype]->shape[0], new_nodes_vec[dst_vtype].size(), graph.indptr, graph.indices, Range(0, graph.indices->shape[0], graph.indices->dtype.bits, ctx)), 
+                            COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], sampled_coo_rows[etype], graph.indices), 
+                            false, true, true, ALL_CODE);
         } else {
-          graph = CSRMatrix(nodes[src_vtype]->shape[0], new_nodes_vec[dst_vtype].size(), graph.indptr, graph.indices);
-          subrels[etype] = UnitGraph::CreateFromCSR(2, graph, ALL_CODE);
+          subrels[etype] = UnitGraph::CreateFromCSR(2, CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices, Range(0, graph.indices->shape[0], graph.indices->dtype.bits, ctx)), ALL_CODE);
         }
       }
       else {
         if constexpr (backward) {
-           subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices), graph, COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indices, sampled_coo_rows[etype]), true, false, true, ALL_CODE);
+           subrels[etype] = UnitGraph::CreateUnitGraphFrom(2, 
+                              CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices, Range(0, graph.indices->shape[0], graph.indices->dtype.bits, ctx)), 
+                              CSRMatrix(), 
+                              COOMatrix(new_nodes_vec[src_vtype].size(), nodes[dst_vtype]->shape[0], graph.indices, sampled_coo_rows[etype]), 
+                              true, false, true, ALL_CODE);
         } else {
-          graph = CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices);
-          subrels[etype] = UnitGraph::CreateFromCSC(2, graph, ALL_CODE);
+          subrels[etype] = UnitGraph::CreateFromCSC(2, CSRMatrix(nodes[dst_vtype]->shape[0], new_nodes_vec[src_vtype].size(), graph.indptr, graph.indices, Range(0, graph.indices->shape[0], graph.indices->dtype.bits, ctx)), ALL_CODE);
         }
       }
     }
@@ -868,7 +874,7 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighborsFused")
           std::tie(new_graph, induced_edges, induced_vertices) = SampleNeighborsFused<IdType, true>(
             hg.sptr(), nodes, mapping, fanouts, dir, prob_or_mask, exclude_edges, replace);
         else 
-          std::tie(new_graph, induced_edges, induced_vertices) = SampleNeighborsFused<IdType, false>(
+          std::tie(new_graph, induced_edges, induced_vertices) = SampleNeighborsFused<IdType, true>(
             hg.sptr(), nodes, mapping, fanouts, dir, prob_or_mask, exclude_edges, replace);
       });
 

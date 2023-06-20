@@ -435,10 +435,10 @@ void SpMMRedopCsrOpt(
     NDArray out, NDArray argu, NDArray arge) {
   int32_t llc_size = GetLLCSize();
 
-#ifdef DEBUG
-  uint64_t startTick, endTick;
-  startTick = __rdtsc();
-#endif  // DEBUG
+// #ifdef DEBUG
+//   uint64_t startTick, endTick;
+//   startTick = __rdtsc();
+// #endif  // DEBUG
 
   const bool has_idx = !IsNullArray(csr.data);
 
@@ -479,38 +479,38 @@ void SpMMRedopCsrOpt(
           64, sizeof(CSRMatrixInternal<IdType, IdType>) * num_M_blocks *
                   num_K_blocks);
 
-#ifdef DEBUG
-  endTick = __rdtsc();
-  if (std::is_same<Redop, op::Max<DType>>::value) {
-    LOG(INFO) << "Redop = Max";
-  } else if (std::is_same<Redop, op::Min<DType>>::value) {
-    LOG(INFO) << "Redop = Min";
-  } else if (std::is_same<Redop, op::Add<DType>>::value) {
-    LOG(INFO) << "Redop = Add";
-  }
-  LOG(INFO) << "nthreads = " << nthreads << ", llc_size = " << llc_size;
-  LOG(INFO) << "M = " << M << ", K = " << K << ", N = " << N;
-  LOG(INFO) << "use_lhs = " << Op::use_lhs << ", use_rhs = " << Op::use_rhs;
-  LOG(INFO) << "total_nnz = " << total_nnz << ", avg_degree = " << avg_degree;
-  LOG(INFO) << "has_idx = " << has_idx;
-  LOG(INFO) << "nnz_prob = " << nnz_prob;
-  LOG(INFO) << "K_block_size = " << K_block_size
-            << ", M_block_size = " << M_block_size;
-  LOG(INFO) << "num_K_blocks = " << num_K_blocks
-            << ", num_M_blocks = " << num_M_blocks;
-  LOG(INFO) << "stage0 ticks = " << (endTick - startTick);
-  startTick = __rdtsc();
-#endif  // DEBUG
+// #ifdef DEBUG
+//   endTick = __rdtsc();
+//   if (std::is_same<Redop, op::Max<DType>>::value) {
+//     LOG(INFO) << "Redop = Max";
+//   } else if (std::is_same<Redop, op::Min<DType>>::value) {
+//     LOG(INFO) << "Redop = Min";
+//   } else if (std::is_same<Redop, op::Add<DType>>::value) {
+//     LOG(INFO) << "Redop = Add";
+//   }
+//   LOG(INFO) << "nthreads = " << nthreads << ", llc_size = " << llc_size;
+//   LOG(INFO) << "M = " << M << ", K = " << K << ", N = " << N;
+//   LOG(INFO) << "use_lhs = " << Op::use_lhs << ", use_rhs = " << Op::use_rhs;
+//   LOG(INFO) << "total_nnz = " << total_nnz << ", avg_degree = " << avg_degree;
+//   LOG(INFO) << "has_idx = " << has_idx;
+//   LOG(INFO) << "nnz_prob = " << nnz_prob;
+//   LOG(INFO) << "K_block_size = " << K_block_size
+//             << ", M_block_size = " << M_block_size;
+//   LOG(INFO) << "num_K_blocks = " << num_K_blocks
+//             << ", num_M_blocks = " << num_M_blocks;
+//   LOG(INFO) << "stage0 ticks = " << (endTick - startTick);
+//   startTick = __rdtsc();
+// #endif  // DEBUG
 
   SpMMCreateBlocks(
       csr, block_csr_array, num_M_blocks, num_K_blocks, M_block_size,
       K_block_size, Op::use_lhs, Op::use_rhs);
 
-#ifdef DEBUG
-  endTick = __rdtsc();
-  LOG(INFO) << "stage1 ticks = " << (endTick - startTick);
-  startTick = __rdtsc();
-#endif  // DEBUG
+// #ifdef DEBUG
+//   endTick = __rdtsc();
+//   LOG(INFO) << "stage1 ticks = " << (endTick - startTick);
+//   startTick = __rdtsc();
+// #endif  // DEBUG
 
   libxsmm_meltwfunction_opreduce_vecs_idx kernel = nullptr;
   if (std::is_same<Redop, op::Max<DType>>::value) {
@@ -524,11 +524,11 @@ void SpMMRedopCsrOpt(
         has_idx, N, LIBXSMM_MELTW_FLAG_OPREDUCE_VECS_REDOP_SUM, false);
   }
 
-#ifdef DEBUG
-  endTick = __rdtsc();
-  LOG(INFO) << "stage2 ticks = " << (endTick - startTick);
-  startTick = __rdtsc();
-#endif  // DEBUG
+// #ifdef DEBUG
+//   endTick = __rdtsc();
+//   LOG(INFO) << "stage2 ticks = " << (endTick - startTick);
+//   startTick = __rdtsc();
+// #endif  // DEBUG
 
   if (std::is_same<Redop, op::Max<DType>>::value ||
       std::is_same<Redop, op::Min<DType>>::value) {
@@ -541,19 +541,19 @@ void SpMMRedopCsrOpt(
         M_block_size, kernel);
   }
 
-#ifdef DEBUG
-  endTick = __rdtsc();
-  LOG(INFO) << "stage3 ticks = " << (endTick - startTick);
-  startTick = __rdtsc();
-#endif  // DEBUG
+// #ifdef DEBUG
+//   endTick = __rdtsc();
+//   LOG(INFO) << "stage3 ticks = " << (endTick - startTick);
+//   startTick = __rdtsc();
+// #endif  // DEBUG
 
   SpMMFreeBlocks(
       block_csr_array, num_M_blocks, num_K_blocks, Op::use_lhs, Op::use_rhs);
 
-#ifdef DEBUG
-  endTick = __rdtsc();
-  LOG(INFO) << "stage4 ticks = " << (endTick - startTick);
-#endif  // DEBUG
+// #ifdef DEBUG
+//   endTick = __rdtsc();
+//   LOG(INFO) << "stage4 ticks = " << (endTick - startTick);
+// #endif  // DEBUG
 }
 
 /**

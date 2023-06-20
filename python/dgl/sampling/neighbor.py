@@ -482,7 +482,12 @@ def _sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None,
                 edge_ids = [F.from_dgl_nd(eid) for eid in induced_edges]
                 edge_frames = utils.extract_edge_subframes(g, edge_ids)
                 utils.set_new_frames(ret, edge_frames=edge_frames)
-            else: 
+                # edges_dict = {}
+                # for i, etype in enumerate(g.canonical_etypes):
+                #     #print(ret.edges(etype=etype))
+                #     edges_dict[etype] = F.from_dgl_nd(induced_edges[i])
+                # ret.edata[EID] = edges_dict
+            else:
                 edge_frames = utils.extract_edge_subframes(g, induced_edges)
                 utils.set_new_frames(ret, edge_frames=edge_frames)
 
