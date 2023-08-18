@@ -212,7 +212,6 @@ def _gspmm(gidx, op, reduce_op, u, e, efeats_redirected_indices=None):
                 "When efeats_redirected is provided, the edata features should have ndim=1, i.e, a scalar index for each edge"
             )
 
-        print('efeats redirected', e)
     else:
         efeats_redirected_indices = None
     use_u = op != "copy_rhs"

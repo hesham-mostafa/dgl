@@ -174,7 +174,6 @@ template <typename IdType, typename DType, typename Op>
 void SpMMSumCsr(
     const BcastOff& bcast, const CSRMatrix& csr, NDArray ufeat, NDArray efeat,
     NDArray out,NDArray E_Redir) {
-  printf("hello");
   const bool has_idx = !IsNullArray(csr.data);
   const IdType* indptr = csr.indptr.Ptr<IdType>();
   const IdType* indices = csr.indices.Ptr<IdType>();
